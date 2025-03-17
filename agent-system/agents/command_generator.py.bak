@@ -1,0 +1,95 @@
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class CommandGenerator:
+    """
+    Generates Linux commands based on documentation and task requirements.
+    """
+    
+    def __init__(self):
+        self.common_commands = {
+            "install": "sudo zypper install {package}",
+            "update": "sudo zypper update {package}",
+            "remove": "sudo zypper remove {package}",
+            "service_enable": "sudo systemctl enable {service}",
+            "service_start": "sudo systemctl start {service}",
+            "service_status": "sudo systemctl status {service}",
+            "firewall_open_port": "sudo firewall-cmd --permanent --add-port={port}/tcp",
+            "firewall_reload": "sudo firewall-cmd --reload"
+        }
+    
+    def generate_commands(self, task, documentation):
+        """
+        Generate appropriate commands for a task based on provided documentation.
+        
+        Args:
+            task (str): Task description
+            documentation (list): List of documentation items from Knowledge System
+            
+        Returns:
+            list: List of generated commands
+        """
+        logger.info(f"Generating commands for task: {task}")
+        
+        # Extract relevant commands from task and documentation
+        commands = []
+        
+        # Basic task parsing (would be more sophisticated in production)
+        task_lower = task.lower()
+        
+        # Handle different types of tasks
+        if "install" in task_lower:
+            # Extract the package name from the task
+            for doc in documentation:
+                if "install" in doc["content"].lower():
+                    # Check if the task mentions specific packages
+                    if "nginx" in task_lower and "nginx" in doc["content"].lower():
+                        commands.append("sudo zypper install nginx")
+                        
+                        # If task mentions boot/startup
+                        if "boot" in task_lower or "start" in task_lower:
+                            commands.append("sudo systemctl enable nginx")
+                            commands.append("sudo systemctl start nginx")
+                            
+                        # If the task might require opening ports
+                        if "web" in task_lower or "nginx" in task_lower:
+                            commands.append("sudo firewall-cmd --permanent --add-port=80/tcp")
+                            commands.append("sudo firewall-cmd --reload")
+                    
+                    # Add other package installations based on task
+                    # ...
+        
+        # Other task types
+        elif "update" in task_lower:
+            if "system" in task_lower:
+                commands.append("sudo zypper update")
+            else:
+                # Extract specific package
+                # ...
+                pass
+        
+        # Return the generated commands
+        logger.info(f"Generated {len(commands)} commands")
+        return commands
+
+# Example usage
+if __name__ == "__main__":
+    # This is for testing the module directly
+    generator = CommandGenerator()
+    task = "Install nginx and configure it to start at boot"
+    docs = [
+        {
+            "title": "Installing and Configuring Nginx on OpenSUSE Tumbleweed",
+            "content": "To install Nginx on OpenSUSE Tumbleweed, use the command: 'sudo zypper install nginx'. To enable and start the service: 'sudo systemctl enable nginx' and 'sudo systemctl start nginx'.",
+            "source": "opensuse-docs"
+        }
+    ]
+    
+    commands = generator.generate_commands(task, docs)
+    print(f"Task: {task}")
+    print("Generated commands:")
+    for cmd in commands:
+        print(f"  - {cmd}")

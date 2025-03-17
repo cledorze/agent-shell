@@ -1,0 +1,405 @@
+<!-- frontend/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Agent System</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css">
+    <style>
+        .chat-container {
+            height: calc(100vh - 12rem);
+            overflow-y: auto;
+        }
+        .command-output {
+            font-family: 'Courier New', monospace;
+            background-color: #000;
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+        .output-stdout {
+            color: #00ff00;
+        }
+        .output-stderr {
+            color: #ff6b6b;
+        }
+        .typing-indicator span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 3px;
+            background-color: #333;
+            animation: typing 1s infinite ease-in-out;
+        }
+        .typing-indicator span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        .typing-indicator span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        @keyframes typing {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-6 text-gray-800">Linux Agent System</h1>
+        
+        <div class="bg-white rounded-lg shadow-lg overflow-hidden mb-6">
+            <div class="p-4 bg-blue-600 text-white font-bold flex justify-between items-center">
+                <span>Chat with Linux Agent</span>
+                <div class="flex space-x-2">
+                    <button id="clearChat" class="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm">Clear Chat</button>
+                    <button id="showTasks" class="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 text-sm">Show Tasks</button>
+                </div>
+            </div>
+            
+            <div id="chatContainer" class="chat-container p-4 bg-gray-50">
+                <div class="message agent mb-4">
+                    <div class="flex items-start">
+                        <div class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold">A</div>
+                        <div class="ml-2 p-3 bg-blue-100 rounded-lg">
+                            <p>Hello! I'm your Linux Agent. How can I assist you today? You can ask me to perform tasks on your Linux system.</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Chat messages will be inserted here -->
+            </div>
+            
+            <div class="p-4 border-t">
+                <div class="flex">
+                    <input id="messageInput" type="text" class="flex-grow border rounded-l px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-600" placeholder="Type your command or question...">
+                    <button id="sendButton" class="bg-blue-600 text-white px-6 py-2 rounded-r hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-600">Send</button>
+                </div>
+                <div class="flex items-center mt-2">
+                    <label class="flex items-center text-sm text-gray-600">
+                        <input id="executeToggle" type="checkbox" class="mr-2">
+                        Execute commands (caution: this will run commands on the server)
+                    </label>
+                </div>
+            </div>
+        </div>
+        
+        <div id="tasksModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+            <div class="bg-white rounded-lg shadow-lg w-full max-w-4xl">
+                <div class="p-4 bg-green-600 text-white font-bold flex justify-between items-center">
+                    <span>Recent Tasks</span>
+                    <button id="closeTasksModal" class="text-white hover:text-gray-200">&times;</button>
+                </div>
+                <div class="p-4 max-h-96 overflow-y-auto">
+                    <table class="w-full border-collapse">
+                        <thead>
+                            <tr class="bg-gray-100 border-b">
+                                <th class="p-2 text-left">ID</th>
+                                <th class="p-2 text-left">Task</th>
+                                <th class="p-2 text-left">Status</th>
+                                <th class="p-2 text-left">Progress</th>
+                                <th class="p-2 text-left">Started</th>
+                                <th class="p-2 text-left">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tasksTableBody">
+                            <!-- Task rows will be inserted here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageInput = document.getElementById('messageInput');
+            const sendButton = document.getElementById('sendButton');
+            const executeToggle = document.getElementById('executeToggle');
+            const clearChatButton = document.getElementById('clearChat');
+            const showTasksButton = document.getElementById('showTasks');
+            const tasksModal = document.getElementById('tasksModal');
+            const closeTasksModalButton = document.getElementById('closeTasksModal');
+            const tasksTableBody = document.getElementById('tasksTableBody');
+            
+            let currentTaskId = null;
+            
+            // Function to add a message to the chat
+            function addMessage(content, type, isRaw = false) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${type} mb-4`;
+                
+                let icon = type === 'user' ? 'U' : 'A';
+                let bgColor = type === 'user' ? 'bg-green-600' : 'bg-blue-600';
+                let messageBg = type === 'user' ? 'bg-green-100' : 'bg-blue-100';
+                
+                let messageContent = isRaw ? content : `<p>${content}</p>`;
+                
+                messageDiv.innerHTML = `
+                    <div class="flex items-start">
+                        <div class="w-10 h-10 rounded-full ${bgColor} flex items-center justify-center text-white font-bold">${icon}</div>
+                        <div class="ml-2 p-3 ${messageBg} rounded-lg">
+                            ${messageContent}
+                        </div>
+                    </div>
+                `;
+                
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+            
+            // Function to add a typing indicator
+            function addTypingIndicator() {
+                const indicatorDiv = document.createElement('div');
+                indicatorDiv.id = 'typingIndicator';
+                indicatorDiv.className = 'message agent mb-4';
+                
+                indicatorDiv.innerHTML = `
+                    <div class="flex items-start">
+                        <div class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold">A</div>
+                        <div class="ml-2 p-3 bg-blue-100 rounded-lg">
+                            <div class="typing-indicator">
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                chatContainer.appendChild(indicatorDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+            
+            // Function to remove typing indicator
+            function removeTypingIndicator() {
+                const indicator = document.getElementById('typingIndicator');
+                if (indicator) {
+                    indicator.remove();
+                }
+            }
+            
+            // Function to format command output
+            function formatCommandOutput(result) {
+                let output = '';
+                
+                if (result.command) {
+                    output += `<div class="font-bold">$ ${result.command}</div>`;
+                }
+                
+                if (result.stdout) {
+                    output += `<div class="output-stdout">${result.stdout}</div>`;
+                }
+                
+                if (result.stderr) {
+                    output += `<div class="output-stderr">${result.stderr}</div>`;
+                }
+                
+                return `<div class="command-output mt-2">${output}</div>`;
+            }
+            
+            // Function to send a message to the server
+            async function sendMessage(message, execute = false) {
+                // Add user message to chat
+                addMessage(message, 'user');
+                
+                // Add typing indicator
+                addTypingIndicator();
+                
+                try {
+                    // Send message to server
+                    const response = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            message: message,
+                            execute: execute,
+                            task_id: currentTaskId
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    // Remove typing indicator
+                    removeTypingIndicator();
+                    
+                    // Store the task ID for continuous conversation
+                    if (data.task_id) {
+                        currentTaskId = data.task_id;
+                    }
+                    
+                    // Add agent's response
+                    addMessage(data.response, 'agent');
+                    
+                    // Add command outputs if available
+                    if (data.command_outputs && data.command_outputs.length > 0) {
+                        let outputContent = '';
+                        data.command_outputs.forEach(result => {
+                            outputContent += formatCommandOutput(result);
+                        });
+                        
+                        addMessage(outputContent, 'agent', true);
+                    }
+                    
+                    // If the task is completed, reset the task ID
+                    if (data.status === 'completed' || data.status === 'failed') {
+                        currentTaskId = null;
+                    }
+                    
+                } catch (error) {
+                    console.error('Error sending message:', error);
+                    removeTypingIndicator();
+                    addMessage('Sorry, there was an error processing your request. Please try again.', 'agent');
+                }
+            }
+            
+            // Function to load and display tasks
+            async function loadTasks() {
+                try {
+                    const response = await fetch('/api/tasks');
+                    const data = await response.json();
+                    
+                    // Clear existing rows
+                    tasksTableBody.innerHTML = '';
+                    
+                    // Add task rows
+                    data.tasks.forEach(task => {
+                        const row = document.createElement('tr');
+                        row.className = 'border-b hover:bg-gray-50';
+                        
+                        const statusClass = getStatusClass(task.status);
+                        const progress = `${task.current_step}/${task.total_steps}`;
+                        const date = new Date(task.start_time).toLocaleString();
+                        
+                        row.innerHTML = `
+                            <td class="p-2">${task.task_id.substring(0, 8)}...</td>
+                            <td class="p-2">${task.task}</td>
+                            <td class="p-2"><span class="px-2 py-1 rounded text-white ${statusClass}">${task.status}</span></td>
+                            <td class="p-2">${progress}</td>
+                            <td class="p-2">${date}</td>
+                            <td class="p-2">
+                                <button class="view-task px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm" data-id="${task.task_id}">View</button>
+                            </td>
+                        `;
+                        
+                        tasksTableBody.appendChild(row);
+                    });
+                    
+                    // Add event listeners to view buttons
+                    document.querySelectorAll('.view-task').forEach(button => {
+                        button.addEventListener('click', () => {
+                            const taskId = button.getAttribute('data-id');
+                            viewTask(taskId);
+                        });
+                    });
+                    
+                } catch (error) {
+                    console.error('Error loading tasks:', error);
+                }
+            }
+            
+            // Function to view a specific task
+            async function viewTask(taskId) {
+                try {
+                    const response = await fetch(`/api/tasks/${taskId}`);
+                    const data = await response.json();
+                    
+                    // Close the modal
+                    tasksModal.classList.add('hidden');
+                    
+                    // Add task details to chat
+                    let detailsHtml = `
+                        <div class="p-4 border rounded-lg bg-gray-50">
+                            <h3 class="font-bold text-lg mb-2">Task Details</h3>
+                            <p><strong>ID:</strong> ${data.request_id}</p>
+                            <p><strong>Task:</strong> ${data.task}</p>
+                            <p><strong>Status:</strong> <span class="px-2 py-1 rounded text-white ${getStatusClass(data.status)}">${data.status}</span></p>
+                            <p><strong>Started:</strong> ${new Date(data.start_time).toLocaleString()}</p>
+                            <p><strong>Progress:</strong> ${data.current_step}/${data.total_steps} steps</p>
+                    `;
+                    
+                    if (data.executed_commands && data.executed_commands.length > 0) {
+                        detailsHtml += `<h4 class="font-bold mt-4 mb-2">Commands Executed:</h4>`;
+                        data.executed_commands.forEach(cmd => {
+                            detailsHtml += `<div class="mb-1">$ ${cmd}</div>`;
+                        });
+                    }
+                    
+                    detailsHtml += `</div>`;
+                    
+                    addMessage(detailsHtml, 'agent', true);
+                    
+                    // Set the current task ID to continue the conversation
+                    currentTaskId = taskId;
+                    
+                } catch (error) {
+                    console.error('Error viewing task:', error);
+                }
+            }
+            
+            // Helper function to get status class
+            function getStatusClass(status) {
+                switch (status) {
+                    case 'completed':
+                        return 'bg-green-500';
+                    case 'failed':
+                        return 'bg-red-500';
+                    case 'running':
+                    case 'processing':
+                        return 'bg-blue-500';
+                    default:
+                        return 'bg-gray-500';
+                }
+            }
+            
+            // Event Listeners
+            sendButton.addEventListener('click', () => {
+                const message = messageInput.value.trim();
+                if (message) {
+                    sendMessage(message, executeToggle.checked);
+                    messageInput.value = '';
+                }
+            });
+            
+            messageInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const message = messageInput.value.trim();
+                    if (message) {
+                        sendMessage(message, executeToggle.checked);
+                        messageInput.value = '';
+                    }
+                }
+            });
+            
+            clearChatButton.addEventListener('click', () => {
+                // Keep only the first welcome message
+                const firstMessage = chatContainer.querySelector('.message');
+                chatContainer.innerHTML = '';
+                chatContainer.appendChild(firstMessage);
+                currentTaskId = null;
+            });
+            
+            showTasksButton.addEventListener('click', () => {
+                tasksModal.classList.remove('hidden');
+                loadTasks();
+            });
+            
+            closeTasksModalButton.addEventListener('click', () => {
+                tasksModal.classList.add('hidden');
+            });
+            
+            // Close modal when clicking outside
+            tasksModal.addEventListener('click', (e) => {
+                if (e.target === tasksModal) {
+                    tasksModal.classList.add('hidden');
+                }
+            });
+        });
+    </script>
+</body>
+</html>

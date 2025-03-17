@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - ORCHESTRATOR_URL=http://orchestrator:8081
+    depends_on:
+      - orchestrator
+    volumes:
+      - api_data:/app/data
+    restart: unless-stopped
+
+  orchestrator:
+    build: ./orchestrator
+    ports:
+      - "8081:8081"
+    environment:
+      - AGENT_SYSTEM_URL=http://agent-system:8082
+      - VM_MANAGER_URL=http://vm-manager:8083
+    depends_on:
+      - agent-system
+      - vm-manager
+    volumes:
+      - orchestrator_data:/app/data
+    restart: unless-stopped
+
+  agent-system:
+    build: ./agent-system
+    ports:
+      - "8082:8082"
+    environment:
+      - KNOWLEDGE_SYSTEM_URL=http://knowledge-system:8084
+      - COMMAND_EXECUTOR_URL=http://command-executor:8085
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - knowledge-system
+      - command-executor
+    volumes:
+      - agent_data:/app/data
+    restart: unless-stopped
+
+  vm-manager:
+    build: ./vm-manager
+    ports:
+      - "8083:8083"
+    volumes:
+      - vm_data:/app/data
+      - /var/run/libvirt:/var/run/libvirt  # To access libvirt on the host
+    restart: unless-stopped
+
+  command-executor:
+    build: ./command-executor
+    ports:
+      - "8085:8085"
+    environment:
+      - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
+    volumes:
+      - executor_data:/app/data
+    restart: unless-stopped
+
+  knowledge-system:
+    build: ./knowledge-system
+    ports:
+      - "8084:8084"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANYTHINGLLM_URL=${ANYTHINGLLM_URL}
+      - ANYTHINGLLM_API_KEY=${ANYTHINGLLM_API_KEY}
+    volumes:
+      - knowledge_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  api_data:
+  orchestrator_data:
+  agent_data:
+  vm_data:
+  executor_data:
+  knowledge_data:

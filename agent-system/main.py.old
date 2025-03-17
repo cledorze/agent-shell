@@ -1,0 +1,296 @@
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
+from utils.state_manager import StateManager
+from utils.llm_service import LLMService
+import logging
+import os
+import uuid
+import requests
+import json
+from datetime import datetime
+import sqlite3
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
+app = FastAPI(title="Agent System")
+
+# Add LLM service initialization
+llm_service = LLMService(api_key=os.environ.get('OPENAI_API_KEY'))
+
+# Add state manager initialization
+state_manager = StateManager(state_dir=os.path.join(os.environ.get('DATA_DIR', '/app/data'), 'states'))
+
+# Configure external services
+KNOWLEDGE_SYSTEM_URL = os.environ.get('KNOWLEDGE_SYSTEM_URL', 'http://knowledge-system:8084')
+
+# Define database path
+DATA_DIR = os.environ.get('DATA_DIR', '/app/data')
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, 'agent.db')
+
+# Define Pydantic models for request and response validation
+class TaskRequest(BaseModel):
+    task: str
+    priority: Optional[str] = "normal"
+    timeout: Optional[int] = 300
+    execute: Optional[bool] = False
+
+class TaskStatus(BaseModel):
+    request_id: str
+    status: str
+    message: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+
+# Initialize database
+def init_db():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Create tasks table if it doesn't exist
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            request_id TEXT PRIMARY KEY,
+            task TEXT NOT NULL,
+            status TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT NOT NULL
+        )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Database initialized at {DB_PATH}")
+    except Exception as e:
+        logger.error(f"Database initialization error: {str(e)}")
+        raise
+
+# Initialize database on startup
+init_db()
+
+# Database functions
+def save_task(request_id, task, status="accepted", details=None):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        now = datetime.now().isoformat()
+        details_json = json.dumps(details or {})
+        
+        cursor.execute(
+            "INSERT INTO tasks (request_id, task, status, details, created_at) VALUES (?, ?, ?, ?, ?)",
+            (request_id, task, status, details_json, now)
+        )
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Task {request_id} saved to database")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving task to database: {str(e)}")
+        return False
+
+def get_task(request_id):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM tasks WHERE request_id = ?", (request_id,))
+        row = cursor.fetchone()
+        
+        conn.close()
+        
+        if row:
+            task_dict = dict(row)
+            if 'details' in task_dict and task_dict['details']:
+                task_dict['details'] = json.loads(task_dict['details'])
+            return task_dict
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error retrieving task from database: {str(e)}")
+        return None
+
+def list_all_tasks():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT request_id, task, status, created_at FROM tasks ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        
+        conn.close()
+        
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error listing tasks from database: {str(e)}")
+        return []
+
+def update_task_status(request_id, status, message=None, details=None):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Get current details
+        cursor.execute("SELECT details FROM tasks WHERE request_id = ?", (request_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return False
+        
+        # Update details if needed
+        current_details = json.loads(row[0]) if row[0] else {}
+        if details:
+            current_details.update(details)
+        
+        # Add message to details if provided
+        if message:
+            current_details['message'] = message
+        
+        details_json = json.dumps(current_details)
+        
+        # Update task
+        cursor.execute(
+            "UPDATE tasks SET status = ?, details = ? WHERE request_id = ?",
+            (status, details_json, request_id)
+        )
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Task {request_id} updated with status: {status}")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating task in database: {str(e)}")
+        return False
+
+def process_task(request_id, task, execute):
+    """
+    Simple task processing function for demonstration.
+    """
+    try:
+        # Update task status to processing
+        update_task_status(request_id, "processing")
+        
+        # Generate a simple command for memory check
+        commands = ["free -h"]
+        
+        # Update task with generated commands
+        update_task_status(
+            request_id,
+            "completed",
+            "Commands generated successfully",
+            {"generated_commands": commands}
+        )
+        
+        logger.info(f"Task {request_id} processed successfully")
+    except Exception as e:
+        logger.error(f"Error processing task {request_id}: {str(e)}")
+        update_task_status(request_id, "failed", f"Error: {str(e)}")
+
+@app.get("/")
+async def root():
+    return {"status": "Agent System operational", "version": "1.0.0"}
+
+@app.get("/health")
+async def health_check():
+    # Basic health check
+    db_healthy = os.path.exists(DB_PATH)
+    
+    return {
+        "status": "healthy",
+        "components": {
+            "api": "healthy",
+            "database": "healthy" if db_healthy else "unhealthy",
+            "db_path": DB_PATH
+        }
+    }
+
+@app.post("/tasks", response_model=TaskStatus)
+async def create_task(task_request: TaskRequest, background_tasks: BackgroundTasks):
+    """
+    Create a new task and start processing it.
+    """
+    # Generate a unique request ID
+    request_id = str(uuid.uuid4())
+    
+    # Log the task
+    logger.info(f"Received task: {task_request.task}")
+    
+    # Create initial details
+    details = {"estimated_completion_time": task_request.timeout}
+    
+    # Save the task to the database
+    if not save_task(request_id, task_request.task, "accepted", details):
+        raise HTTPException(status_code=500, detail="Failed to save task")
+    
+    # Process the task in the background
+    background_tasks.add_task(
+        process_task,
+        request_id=request_id,
+        task=task_request.task,
+        execute=task_request.execute
+    )
+    
+    # Return task status
+    return {
+        "request_id": request_id,
+        "status": "accepted",
+        "message": "Task has been accepted and is being processed",
+        "details": details
+    }
+
+@app.get("/tasks/{request_id}", response_model=TaskStatus)
+async def get_task_status(request_id: str):
+    """
+    Get the status of a specific task.
+    """
+    task = get_task(request_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    return {
+        "request_id": request_id,
+        "status": task.get("status", "unknown"),
+        "message": task.get("details", {}).get("message"),
+        "details": task.get("details", {})
+    }
+
+@app.get("/tasks/{request_id}/commands")
+async def get_task_commands(request_id: str):
+    """
+    Get the commands generated for a specific task.
+    """
+    task = get_task(request_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Get commands from details
+    details = task.get("details", {})
+    commands = details.get("generated_commands", [])
+    
+    return {
+        "request_id": request_id,
+        "task": task.get("task", ""),
+        "status": task.get("status", "unknown"),
+        "commands": commands,
+        "command_count": len(commands)
+    }
+
+@app.get("/tasks")
+async def list_tasks():
+    """
+    Get a list of all tasks.
+    """
+    tasks = list_all_tasks()
+    return {"tasks": tasks, "count": len(tasks)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8082, reload=True)

@@ -3,8 +3,8 @@ from fastapi import HTTPException
 
 from config import logger
 from . import vm_manager
-import command_handler
-import task_processor
+from . import command_handler
+from . import task_processor
 
 async def handle_chat_request(request, command_generator, execution_engine, state_manager, llm_service):
     """Process a chat request and generate a response."""

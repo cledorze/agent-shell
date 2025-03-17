@@ -1,10 +1,11 @@
 import uuid
 import requests
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
-
+from fastapi.responses import HTMLResponse
 from config import KNOWLEDGE_SYSTEM_URL, COMMAND_EXECUTOR_URL, VM_MANAGER_URL, logger
 from models.models import TaskRequest, ChatRequest, TaskStatus, ChatResponse, ResetVMRequest
-from api.ui_handler import serve_frontend
+from api.ui_handler import serve_frontend as ui_frontend
+
 from handlers.chat_handler import handle_chat_request
 from handlers.vm_manager import create_vm_for_task, reset_vm, get_vm_details
 from handlers.task_processor import process_task
@@ -20,7 +21,7 @@ async def get_components():
 
 @router.get("/", response_class=HTMLResponse)
 async def serve_frontend():
-    return ui_handler.serve_frontend()
+    return ui_frontend()
 
 @router.get("/health")
 async def health_check():

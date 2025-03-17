@@ -1,4 +1,5 @@
 version: '3.8'
+
 services:
   agent-system:
     build: ./agent-system
@@ -6,34 +7,42 @@ services:
       - "8082:8082"
     environment:
       - KNOWLEDGE_SYSTEM_URL=http://knowledge-system:8084
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DRY_RUN=true
-      - DIRECT_EXECUTION=false
-      - DATA_DIR=/app/data
-    depends_on:
-      - knowledge-system
-    volumes:
-      - agent_data:/app/data
-    restart: unless-stopped
-
-  knowledge-system:
-    build: ./knowledge-system
-    ports:
-      - "8084:8084"
-    environment:
-      - ANYTHINGLLM_URL=${ANYTHINGLLM_URL}
-      - ANYTHINGLLM_API_KEY=${ANYTHINGLLM_API_KEY}
-      - KNOWLEDGE_SYSTEM_URL=http://knowledge-system:8084
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - DRY_RUN=false
       - DIRECT_EXECUTION=true
       - DATA_DIR=/app/data
       - DEBUG_LEVEL=DEBUG
       - VERBOSE_LEVEL=3
       - COLOR_OUTPUT=true
+      - COMMAND_TIMEOUT=60
+      - OLLAMA_HOST=100.100.100.160
+      - OLLAMA_PORT=11434
+      - OLLAMA_MODEL=ALIENTELLIGENCE/linuxcmdxpert
+    depends_on:
+      - knowledge-system
+    volumes:
+      - agent_data:/app/data
+      - ./frontend:/app/frontend
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  knowledge-system:
+    build: ./knowledge-system
+    ports:
+      - "8084:8084"
+    environment:
+      - DATA_DIR=/app/data
     volumes:
       - knowledge_data:/app/data
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   agent_data:

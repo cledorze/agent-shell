@@ -1,5 +1,7 @@
 import uuid
 import requests
+import logging
+
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse
 from config import KNOWLEDGE_SYSTEM_URL, COMMAND_EXECUTOR_URL, VM_MANAGER_URL, logger
@@ -10,9 +12,16 @@ from handlers.chat_handler import handle_chat_request
 from handlers.vm_manager import create_vm_for_task, reset_vm, get_vm_details
 from handlers.task_processor import process_task
 from handlers.command_handler import execute_command_on_vm, execute_command_locally
+from robust_vm_manager import RobustVMManager
+from vm_manager import VMManager
+
+
 
 
 router = APIRouter()
+vm_manager = VMManager()
+
+
 
 # Dépendances pour obtenir les composants
 async def get_components():
@@ -51,6 +60,25 @@ async def health_check():
     # Get components
     command_generator, execution_engine, state_manager, llm_service = await get_components()
     
+    # Check knowledge system health
+    knowledge_system_healthy = False
+    try:
+        knowledge_response = requests.get(f"{KNOWLEDGE_SYSTEM_URL}/health", timeout=2)
+        knowledge_system_healthy = knowledge_response.status_code == 200
+    except Exception:
+        logger.warning("Knowledge System health check failed")
+    
+    # Check command executor health
+    command_executor_healthy = False
+    try:
+        executor_response = requests.get(f"{COMMAND_EXECUTOR_URL}/health", timeout=2)
+        command_executor_healthy = executor_response.status_code == 200
+    except Exception:
+        logger.warning("Command Executor health check failed")
+    
+    # Use the VM Manager's own status
+    vm_manager_healthy = vm_manager.is_available()
+        
     return {
         "status": "healthy",
         "components": {

@@ -3,11 +3,13 @@ import requests
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 
 from config import KNOWLEDGE_SYSTEM_URL, COMMAND_EXECUTOR_URL, VM_MANAGER_URL, logger
-from models import TaskRequest, ChatRequest, TaskStatus, ChatResponse, ResetVMRequest
-import ui_handler
-import vm_manager
-import task_processor
-import chat_handler
+from models.models import TaskRequest, ChatRequest, TaskStatus, ChatResponse, ResetVMRequest
+from api.ui_handler import serve_frontend
+from handlers.chat_handler import handle_chat_request
+from handlers.vm_manager import create_vm_for_task, reset_vm, get_vm_details
+from handlers.task_processor import process_task
+from handlers.command_handler import execute_command_on_vm, execute_command_locally
+
 
 router = APIRouter()
 

@@ -2,8 +2,8 @@ import logging
 from fastapi import HTTPException
 
 from config import logger
-import vm_manager
-import command_handler
+#from . import vm_manager
+#from . import command_handler
 
 async def process_task(task_id, task, execute, command_generator, execution_engine, state_manager):
     """Process a task and execute commands if requested."""

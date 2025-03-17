@@ -1,8 +1,8 @@
-iimport logging
+import logging
 from fastapi import HTTPException
 
 from config import logger
-import vm_manager
+from . import vm_manager
 import command_handler
 import task_processor
 

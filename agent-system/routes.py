@@ -10,10 +10,10 @@ from api.ui_handler import serve_frontend as ui_frontend
 
 from handlers.chat_handler import handle_chat_request
 from handlers.vm_manager import create_vm_for_task, reset_vm, get_vm_details
-from handlers.task_processor import process_task
 from handlers.command_handler import execute_command_on_vm, execute_command_locally
-from robust_vm_manager import RobustVMManager
-from vm_manager import VMManager
+from handlers.task_processor import process_task as task_processor_process_task
+from robust_vm_manager import RobustVMManager as VMManager
+#from vm_manager import VMManager
 
 
 
@@ -118,7 +118,7 @@ async def create_task(task_request: TaskRequest, background_tasks: BackgroundTas
     
     # Start processing in the background
     background_tasks.add_task(
-        task_processor.process_task,
+        task_processor_process_task,
         task_id=request_id,
         task=task_request.task,
         execute=task_request.execute,

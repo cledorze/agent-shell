@@ -1,4 +1,4 @@
-module orchestrator
+module api_gateway
 
 go 1.19
 

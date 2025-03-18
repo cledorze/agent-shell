@@ -1,4 +1,4 @@
-module orchestrator
+module vm_manager
 
 go 1.19
 

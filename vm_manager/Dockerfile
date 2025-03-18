@@ -1,5 +1,11 @@
 FROM golang:1.19-bullseye
 
+# Install libvirt development packages
+RUN apt-get update && apt-get install -y \
+    libvirt-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy go.mod and go.sum files
@@ -13,10 +19,10 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN go build -o orchestrator ./cmd/orchestrator
+RUN go build -o vm_manager ./cmd/vm_manager
 
 # Expose the port
-EXPOSE 8081
+EXPOSE 8083
 
 # Run the application
-CMD ["./orchestrator"]
+CMD ["./vm_manager"]

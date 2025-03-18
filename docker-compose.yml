@@ -2,111 +2,97 @@ version: '3.8'
 
 services:
   api-gateway:
-    build: 
-      no-cache: true
-      image: localhost/agent_ 
-      context: ./api-gateway
+    build:
+      context: ./api_gateway
       dockerfile: Dockerfile
+    image: glinux-agent-api-gateway:local
     ports:
       - "8080:8080"
-    environment:
-      - ORCHESTRATOR_URL=http://orchestrator:8081
     volumes:
-      - api_data:/app/data
+      - ./api_gateway:/app
     depends_on:
       - orchestrator
-    restart: unless-stopped
+    networks:
+      - agent-network
+    environment:
+      - ORCHESTRATOR_URL=http://orchestrator:8081
 
   orchestrator:
-    build: 
-      no-cache: true
-      image: localhost/agent_ 
+    build:
       context: ./orchestrator
       dockerfile: Dockerfile
+    image: glinux-agent-orchestrator:local  
     ports:
       - "8081:8081"
-    environment:
-      - AGENT_SYSTEM_URL=http://agent-system:8082
-      - VM_MANAGER_URL=http://vm-manager:8083
     volumes:
-      - orchestrator_data:/app/data
+      - ./orchestrator:/app
     depends_on:
       - agent-system
       - vm-manager
-    restart: unless-stopped
+      - command-executor
+    networks:
+      - agent-network
+    environment:
+      - AGENT_SYSTEM_URL=http://agent-system:8082
+      - VM_MANAGER_URL=http://vm-manager:8083
+      - COMMAND_EXECUTOR_URL=http://command-executor:8084
 
   agent-system:
-    build: 
-      no-cache: true
-      image: localhost/agent_ ./agent-system
+    build:
+      context: ./agent_system
+      dockerfile: Dockerfile
+    image: glinux-agent-agent-system:local
     ports:
       - "8082:8082"
-    environment:
-      - KNOWLEDGE_SYSTEM_URL=http://knowledge-system:8084
-      - COMMAND_EXECUTOR_URL=http://command-executor:8085
-      - VM_MANAGER_URL=http://vm-manager:8083
-      - DRY_RUN=true
-      - DEBUG_LEVEL=DEBUG
     volumes:
-      - agent_data:/app/data
+      - ./agent_system:/app:Z
     depends_on:
       - knowledge-system
-      - command-executor
-    restart: unless-stopped
+    networks:
+      - agent-network
+    environment:
+      - KNOWLEDGE_SYSTEM_URL=http://knowledge-system:8085
 
   vm-manager:
-    build: 
-      no-cache: true
-      image: localhost/agent_ 
-      context: ./vm-manager
+    build:
+      context: ./vm_manager
       dockerfile: Dockerfile
+    image: glinux-agent-vm-manager:local
     ports:
       - "8083:8083"
-    environment:
-      - VM_MANAGER_PORT=8083
-      - LIBVIRT_URI=qemu:///system
-      - VM_DATA_DIR=/var/lib/linux-agent-system/vms
-      - VM_TEMPLATE_PATH=/var/lib/libvirt/images/opensuse-tumbleweed-template.qcow2
-      - ENABLE_SIMULATION=true
     volumes:
-      - vm_data:/var/lib/linux-agent-system/vms
-      - /var/lib/linux-agent-system:/var/lib/linux-agent-system
+      - ./vm_manager:/app
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
-      - /var/lib/libvirt/images:/var/lib/libvirt/images
-     privileged: true
-    restart: unless-stopped
+    privileged: true
+    networks:
+      - agent-network
+    environment:
+      - LIBVIRT_CONNECTION=qemu:///system
 
   command-executor:
-    build: 
-      no-cache: true
-      image: localhost/agent_ 
-      context: ./command-executor
+    build:
+      context: ./command_executor
       dockerfile: Dockerfile
-    ports:
-      - "8085:8085"
-    environment:
-      - COMMAND_EXECUTOR_PORT=8085
-      - VM_MANAGER_URL=http://vm-manager:8083
-    volumes:
-      - executor_data:/app/data
-    restart: unless-stopped
-
-  knowledge-system:
-    build: 
-      no-cache: true
-      image: localhost/agent_ ./knowledge-system
+    image: glinux-agent-command-executor:local
     ports:
       - "8084:8084"
-    environment:
-      - DATA_DIR=/app/data
     volumes:
-      - knowledge_data:/app/data
-    restart: unless-stopped
+      - ./command_executor:/app
+    networks:
+      - agent-network
 
-volumes:
-  api_data:
-  orchestrator_data:
-  agent_data:
-  vm_data:
-  executor_data:
-  knowledge_data:
+  knowledge-system:
+    build:
+      context: ./knowledge_system
+      dockerfile: Dockerfile
+    image: glinux-agent-knowledge-system:local
+    ports:
+      - "8085:8085"
+    volumes:
+      - ./knowledge_system:/app:Z
+    networks:
+      - agent-network
+
+networks:
+  agent-network:
+    driver: bridge

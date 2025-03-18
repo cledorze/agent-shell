@@ -13,10 +13,10 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN go build -o orchestrator ./cmd/orchestrator
+RUN go build -o api_gateway ./cmd/api
 
 # Expose the port
-EXPOSE 8081
+EXPOSE 8080
 
 # Run the application
-CMD ["./orchestrator"]
+CMD ["./api_gateway"]

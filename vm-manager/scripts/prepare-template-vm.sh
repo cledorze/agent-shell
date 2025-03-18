@@ -184,7 +184,6 @@ EOF
 
 # Create ISO with AutoYaST configuration
 AUTOINSTALL_ISO="/tmp/autoinstall.iso"
-#genisoimage -output "${AUTOINSTALL_ISO}" -volid "OEMDRV" -rational-rock "${TEMP_DIR}/autoinst.xml"
 mkisofs -output "${AUTOINSTALL_ISO}" -volid "OEMDRV" -rational-rock "${TEMP_DIR}/autoinst.xml"
 
 echo -e "${GREEN}AutoYaST configuration created!${NC}"
@@ -198,7 +197,7 @@ virt-install \
   --disk path=${OUTPUT_PATH},format=qcow2 \
   --disk path=${AUTOINSTALL_ISO},device=cdrom \
   --location ${ISO_PATH} \
-  --os-variant=opensusetumbleweed \
+  --os-variant=opensuse15.6 \
   --network default \
   --graphics vnc,listen=0.0.0.0 \
   --noautoconsole \
@@ -222,12 +221,24 @@ virsh undefine temp-template-install
 rm -f "${AUTOINSTALL_ISO}"
 
 # Prepare the template for cloud-init (sysprep)
+#echo -e "${YELLOW}Preparing template for cloud-init...${NC}"
+# Run virt-sysprep and ignore a failure due to OS detection if necessary.
+#if ! virt-sysprep -a "${OUTPUT_PATH}" \
+#  --operations defaults,-ssh-hostkeys,-ssh-userdir,-tmp-files,-customize \
+#  --hostname template-vm; then
+#    echo -e "${YELLOW}Warning: virt-sysprep did not detect an operating system, skipping sysprep steps.${NC}"
+#fi
+
 echo -e "${YELLOW}Preparing template for cloud-init...${NC}"
-virt-sysprep -a "${OUTPUT_PATH}" \
+if ! virt-sysprep -a "${OUTPUT_PATH}" \
   --operations defaults,-ssh-hostkeys,-ssh-userdir,-tmp-files,-customize \
-  --hostname template-vm
+  --hostname template-vm; then
+    echo -e "${YELLOW}Warning: virt-sysprep failed, skipping OS-specific cleanup.${NC}"
+fi
+
 
 echo -e "${GREEN}=== Template VM creation complete! ===${NC}"
 echo -e "Template path: ${OUTPUT_PATH}"
 echo -e "Use this template with the VM Manager to create new VMs."
 echo -e "Default credentials: agent / agent"
+

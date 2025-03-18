@@ -2,60 +2,64 @@ version: '3.8'
 
 services:
   api-gateway:
-    build: ./api-gateway
+    build: 
+      no-cache: true
+      image: localhost/agent_ 
+      context: ./api-gateway
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
     environment:
       - ORCHESTRATOR_URL=http://orchestrator:8081
-    depends_on:
-      - orchestrator
     volumes:
       - api_data:/app/data
+    depends_on:
+      - orchestrator
     restart: unless-stopped
 
   orchestrator:
-    build: ./orchestrator
+    build: 
+      no-cache: true
+      image: localhost/agent_ 
+      context: ./orchestrator
+      dockerfile: Dockerfile
     ports:
       - "8081:8081"
     environment:
       - AGENT_SYSTEM_URL=http://agent-system:8082
       - VM_MANAGER_URL=http://vm-manager:8083
+    volumes:
+      - orchestrator_data:/app/data
     depends_on:
       - agent-system
       - vm-manager
-    volumes:
-      - orchestrator_data:/app/data
     restart: unless-stopped
 
   agent-system:
-    build: ./agent-system
+    build: 
+      no-cache: true
+      image: localhost/agent_ ./agent-system
     ports:
       - "8082:8082"
     environment:
       - KNOWLEDGE_SYSTEM_URL=http://knowledge-system:8084
       - COMMAND_EXECUTOR_URL=http://command-executor:8085
       - VM_MANAGER_URL=http://vm-manager:8083
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DRY_RUN=false
-      - DIRECT_EXECUTION=true
-      - DATA_DIR=/app/data
-      - DEBUG_LEVEL=INFO
-      - VERBOSE_LEVEL=2
-      - COLOR_OUTPUT=true
-      - COMMAND_TIMEOUT=60
-      - OLLAMA_HOST=${OLLAMA_HOST:-100.100.100.160}
-      - OLLAMA_PORT=${OLLAMA_PORT:-11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-ALIENTELLIGENCE/linuxcmdxpert}
+      - DRY_RUN=true
+      - DEBUG_LEVEL=DEBUG
+    volumes:
+      - agent_data:/app/data
     depends_on:
       - knowledge-system
       - command-executor
-      - vm-manager
-    volumes:
-      - agent_data:/app/data
     restart: unless-stopped
 
   vm-manager:
-    build: ./vm-manager
+    build: 
+      no-cache: true
+      image: localhost/agent_ 
+      context: ./vm-manager
+      dockerfile: Dockerfile
     ports:
       - "8083:8083"
     environment:
@@ -63,37 +67,33 @@ services:
       - LIBVIRT_URI=qemu:///system
       - VM_DATA_DIR=/var/lib/linux-agent-system/vms
       - VM_TEMPLATE_PATH=/var/lib/libvirt/images/opensuse-tumbleweed-template.qcow2
-      - LIBVIRT_NETWORK=default
-      - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
-      - NGROK_REGION=${NGROK_REGION:-us}
-      - ENABLE_SIMULATION=${ENABLE_SIMULATION:-false}
+      - ENABLE_SIMULATION=true
     volumes:
       - vm_data:/var/lib/linux-agent-system/vms
-      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
-      - /var/lib/libvirt/images:/var/lib/libvirt/images
-    privileged: true  # Required for libvirt access
     restart: unless-stopped
 
   command-executor:
-    build: ./command-executor
+    build: 
+      no-cache: true
+      image: localhost/agent_ 
+      context: ./command-executor
+      dockerfile: Dockerfile
     ports:
       - "8085:8085"
     environment:
       - COMMAND_EXECUTOR_PORT=8085
-      - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
       - VM_MANAGER_URL=http://vm-manager:8083
     volumes:
       - executor_data:/app/data
     restart: unless-stopped
 
   knowledge-system:
-    build: ./knowledge-system
+    build: 
+      no-cache: true
+      image: localhost/agent_ ./knowledge-system
     ports:
       - "8084:8084"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANYTHINGLLM_URL=${ANYTHINGLLM_URL}
-      - ANYTHINGLLM_API_KEY=${ANYTHINGLLM_API_KEY}
       - DATA_DIR=/app/data
     volumes:
       - knowledge_data:/app/data

@@ -46,8 +46,24 @@ services:
     ports:
       - "8085:8085"
     restart: unless-stopped
+  vm-manager:
+    build: ./vm-manager
+    ports:
+      - "8083:8083"
+    environment:
+      - VM_MANAGER_PORT=8083
+      - VM_DATA_DIR=/app/data/vms
+      - VM_TEMPLATE_PATH=/app/data/templates/opensuse-tumbleweed.qcow2
+      - LIBVIRT_URI=qemu:///system
+      - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
+      - NGROK_REGION=${NGROK_REGION}
+    volumes:
+      - vm_data:/app/data
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /var/lib/libvirt/images:/var/lib/libvirt/images:ro
+    privileged: true
+    restart: unless-stopped
 
 volumes:
   agent_data:
   knowledge_data:
-  vm_data:  # Added this volume definition

@@ -1,4 +1,3 @@
-<!-- frontend/index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -330,7 +329,7 @@
                         });
                     }
                     
-                    // Ajouter les informations VM et le bouton de destruction
+                    // Add VM information and destroy button
                     const vm_id = data.vm_id || (data.vm_info ? data.vm_info.id : null);
                     if (vm_id) {
                         detailsHtml += `
@@ -360,20 +359,20 @@
                 }
             }
             
-            // Fonction pour détruire une VM
+            // Function to destroy a VM
             async function destroyVM(vmId) {
                 if (!vmId) {
-                    alert("Aucun identifiant de VM fourni");
+                    alert("No VM ID provided");
                     return;
                 }
                 
-                if (!confirm(`Êtes-vous sûr de vouloir détruire la VM ${vmId}? Cette action est irréversible.`)) {
+                if (!confirm(`Are you sure you want to destroy VM ${vmId}? This action is irreversible.`)) {
                     return;
                 }
                 
                 try {
-                    // Afficher un indicateur de chargement
-                    addMessage("Destruction de la VM en cours...", 'agent');
+                    // Show loading indicator
+                    addMessage("Destroying VM...", 'agent');
                     
                     const response = await fetch(`/api/vms/${vmId}`, {
                         method: 'DELETE'
@@ -381,8 +380,8 @@
                     
                     if (response.ok) {
                         const data = await response.json();
-                        addMessage(`VM ${vmId} destruction initiée: ${data.message}`, 'agent');
-                        // Recharger la liste des tâches
+                        addMessage(`VM ${vmId} destruction initiated: ${data.message}`, 'agent');
+                        // Reload task list if modal is open
                         if (tasksModal.classList.contains('hidden') === false) {
                             loadTasks();
                         }
@@ -394,11 +393,11 @@
                         } catch {
                             errorText = response.statusText;
                         }
-                        addMessage(`Erreur lors de la destruction de la VM: ${errorText}`, 'agent');
+                        addMessage(`Error destroying VM: ${errorText}`, 'agent');
                     }
                 } catch (error) {
                     console.error('Error destroying VM:', error);
-                    addMessage(`Erreur réseau lors de la destruction de la VM: ${error.message}`, 'agent');
+                    addMessage(`Network error when destroying VM: ${error.message}`, 'agent');
                 }
             }
             
@@ -460,7 +459,7 @@
                 }
             });
             
-            // Expose the destroyVM function globally so it can be used with onclick
+            // Expose destroyVM function globally for the onclick attribute
             window.destroyVM = destroyVM;
         });
     </script>

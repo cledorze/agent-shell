@@ -9,20 +9,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"math/rand"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/libvirt/libvirt-go"
 )
 
 // VM states
 const (
-	VMStateCreating = "creating"
-	VMStateRunning  = "running"
-	VMStateStopped  = "stopped"
-	VMStateError    = "error"
+	VMStateCreating   = "creating"
+	VMStateRunning    = "running"
+	VMStateStopped    = "stopped"
+	VMStateError      = "error"
 	VMStateDestroying = "destroying"
 )
 
@@ -47,6 +50,7 @@ type VMManager struct {
 	TaskToVMMap map[string]string
 	baseDir     string
 	templateVM  string
+	libvirtURI  string
 	mutex       sync.Mutex
 }
 
@@ -62,10 +66,42 @@ func NewVMManager() *VMManager {
 		log.Printf("Failed to create VM data directory: %v", err)
 	}
 
+	// Create VM instances directory
+	instancesDir := filepath.Join(baseDir, "vm-instances")
+	if err := os.MkdirAll(instancesDir, 0755); err != nil {
+		log.Printf("Failed to create VM instances directory: %v", err)
+	}
+
 	// Get the template VM path from environment or use default
 	templateVM := os.Getenv("VM_TEMPLATE_PATH")
 	if templateVM == "" {
 		templateVM = "/app/data/templates/opensuse-tumbleweed.qcow2"
+	}
+
+	// Get libvirt URI from environment or use default
+	libvirtURI := os.Getenv("LIBVIRT_URI")
+	if libvirtURI == "" {
+		libvirtURI = "qemu:///system"
+	}
+
+	// Verify libvirt connection
+	conn, err := libvirt.NewConnect(libvirtURI)
+	if err != nil {
+		log.Printf("WARNING: Could not connect to libvirt: %v", err)
+		log.Printf("Trying to use virsh command line as fallback")
+		// Try virsh as fallback
+		cmd := exec.Command("virsh", "--version")
+		if err := cmd.Run(); err != nil {
+			log.Printf("WARNING: virsh command not available: %v", err)
+			log.Printf("VM management will be limited")
+		} else {
+			log.Printf("virsh command is available, will use CLI fallback")
+		}
+	} else {
+		hypervisor, _ := conn.GetType()
+		version, _ := conn.GetVersion()
+		log.Printf("Connected to libvirt: %s version %d", hypervisor, version)
+		conn.Close()
 	}
 
 	return &VMManager{
@@ -73,6 +109,7 @@ func NewVMManager() *VMManager {
 		TaskToVMMap: make(map[string]string),
 		baseDir:     baseDir,
 		templateVM:  templateVM,
+		libvirtURI:  libvirtURI,
 	}
 }
 
@@ -116,10 +153,40 @@ func (m *VMManager) loadVMs() error {
 			}
 
 			log.Printf("Loaded VM: %s (State: %s, Task: %s)", vm.Name, vm.State, vm.TaskID)
+			
+			// Verify if the VM actually exists in libvirt
+			exists, _ := m.checkVMExists(vm.Name)
+			if !exists && vm.State != VMStateDestroying && vm.State != VMStateError {
+				log.Printf("VM %s exists in database but not in libvirt. Marking as error.", vm.Name)
+				vm.State = VMStateError
+				vm.Error = "VM not found in libvirt"
+				m.saveVM(&vm)
+			}
 		}
 	}
 
 	return nil
+}
+
+// Check if VM exists in libvirt
+func (m *VMManager) checkVMExists(vmName string) (bool, error) {
+	// Try libvirt API first
+	conn, err := libvirt.NewConnect(m.libvirtURI)
+	if err == nil {
+		defer conn.Close()
+		
+		domain, err := conn.LookupDomainByName(vmName)
+		if err == nil {
+			domain.Free()
+			return true, nil
+		}
+		return false, nil
+	}
+	
+	// Fallback to virsh command
+	cmd := exec.Command("virsh", "dominfo", vmName)
+	err = cmd.Run()
+	return err == nil, nil
 }
 
 // Save VM information to file
@@ -160,7 +227,7 @@ func (m *VMManager) CreateVM(taskID string) (*VM, error) {
 	vm := &VM{
 		ID:          uuid.New().String(),
 		TaskID:      taskID,
-		Name:        fmt.Sprintf("suse-agent-vm-%s", taskID[:8]),
+		Name:        fmt.Sprintf("suse-agent-%s", uuid.New().String()[:8]),
 		State:       VMStateCreating,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
@@ -181,7 +248,76 @@ func (m *VMManager) CreateVM(taskID string) (*VM, error) {
 	return vm, nil
 }
 
-// Provision the VM (this would be a real provisioning in production)
+// Generate random MAC address
+func generateRandomMAC() string {
+	buf := make([]byte, 6)
+	_, err := rand.Read(buf)
+	if err != nil {
+		return "52:54:00:00:00:01" // Fallback
+	}
+	
+	// Ensure it's a valid MAC for VMs
+	buf[0] = (buf[0] & 0xfe) | 0x02 // Set the locally administered bit
+	
+	return fmt.Sprintf("52:54:%02x:%02x:%02x:%02x", 
+		buf[2], buf[3], buf[4], buf[5])
+}
+
+// Set up ngrok tunnel
+func (m *VMManager) setupNgrokTunnel(ipAddress string, port int) (string, error) {
+	// Check if ngrok auth token is available
+	authToken := os.Getenv("NGROK_AUTH_TOKEN")
+	if authToken == "" {
+		return "", fmt.Errorf("NGROK_AUTH_TOKEN not set")
+	}
+	
+	// Set target for tunnel
+	target := fmt.Sprintf("%s:%d", ipAddress, port)
+	
+	// Use ngrok's API to establish a tunnel
+	ngrokRegion := os.Getenv("NGROK_REGION")
+	if ngrokRegion == "" {
+		ngrokRegion = "us"
+	}
+	
+	// Start ngrok in background
+	cmd := exec.Command("ngrok", "tcp", "--region", ngrokRegion, "--authtoken", authToken, target)
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("failed to start ngrok: %v", err)
+	}
+	
+	// Wait for tunnel to be established
+	time.Sleep(5 * time.Second)
+	
+	// Query ngrok API to get tunnel URL
+	resp, err := http.Get("http://localhost:4040/api/tunnels")
+	if err != nil {
+		return "", fmt.Errorf("failed to query ngrok API: %v", err)
+	}
+	defer resp.Body.Close()
+	
+	var result struct {
+		Tunnels []struct {
+			PublicURL string `json:"public_url"`
+			Proto     string `json:"proto"`
+		} `json:"tunnels"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to parse ngrok API response: %v", err)
+	}
+	
+	// Find TCP tunnel
+	for _, tunnel := range result.Tunnels {
+		if tunnel.Proto == "tcp" {
+			return tunnel.PublicURL, nil
+		}
+	}
+	
+	return "", fmt.Errorf("no TCP tunnel found")
+}
+
+// Provision the VM using libvirt
 func (m *VMManager) provisionVM(vm *VM) {
 	// Create VM directory
 	vmDir := filepath.Join(m.baseDir, "vm-instances", vm.ID)
@@ -191,13 +327,10 @@ func (m *VMManager) provisionVM(vm *VM) {
 		return
 	}
 
-	// In a real implementation, this would create a real VM
-	// For this demo, we'll simulate VM creation with a delay
-	log.Printf("Creating VM %s for task %s...", vm.Name, vm.TaskID)
-	time.Sleep(5 * time.Second)
-
 	// Set up a VM disk by copying the template
 	vmDiskPath := filepath.Join(vmDir, "disk.qcow2")
+	log.Printf("Creating VM disk from template %s to %s", m.templateVM, vmDiskPath)
+	
 	cmd := exec.Command("cp", m.templateVM, vmDiskPath)
 	if err := cmd.Run(); err != nil {
 		log.Printf("Failed to create VM disk: %v", err)
@@ -205,15 +338,173 @@ func (m *VMManager) provisionVM(vm *VM) {
 		return
 	}
 
-	// Simulate starting the VM
-	log.Printf("Starting VM %s...", vm.Name)
-	time.Sleep(3 * time.Second)
+	// Try to use libvirt API
+	useLibvirtAPI := true
+	conn, err := libvirt.NewConnect(m.libvirtURI)
+	if err != nil {
+		log.Printf("Failed to connect to libvirt API: %v", err)
+		log.Printf("Will try using virsh CLI instead")
+		useLibvirtAPI = false
+	}
+	
+	// Generate random MAC address
+	mac := generateRandomMAC()
+	
+	if useLibvirtAPI {
+		defer conn.Close()
+		
+		// Create XML definition for the domain
+		xmlConfig := fmt.Sprintf(`
+		<domain type='kvm'>
+		  <name>%s</name>
+		  <memory unit='GiB'>2</memory>
+		  <vcpu>2</vcpu>
+		  <os>
+			<type arch='x86_64'>hvm</type>
+			<boot dev='hd'/>
+		  </os>
+		  <features>
+			<acpi/>
+			<apic/>
+		  </features>
+		  <devices>
+			<disk type='file' device='disk'>
+			  <driver name='qemu' type='qcow2'/>
+			  <source file='%s'/>
+			  <target dev='vda' bus='virtio'/>
+			</disk>
+			<interface type='network'>
+			  <source network='default'/>
+			  <mac address='%s'/>
+			  <model type='virtio'/>
+			</interface>
+			<console type='pty'/>
+			<graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
+			  <listen type='address' address='0.0.0.0'/>
+			</graphics>
+		  </devices>
+		</domain>`, vm.Name, vmDiskPath, mac)
+
+		// Define the domain
+		domain, err := conn.DomainDefineXML(xmlConfig)
+		if err != nil {
+			log.Printf("Failed to define domain: %v", err)
+			m.setVMError(vm, fmt.Sprintf("Failed to define domain: %v", err))
+			return
+		}
+
+		// Start the domain
+		if err := domain.Create(); err != nil {
+			log.Printf("Failed to start domain: %v", err)
+			m.setVMError(vm, fmt.Sprintf("Failed to start domain: %v", err))
+			return
+		}
+		
+		log.Printf("Successfully started VM %s using libvirt API", vm.Name)
+	} else {
+		// Try using virsh command line
+		xmlPath := filepath.Join(vmDir, "domain.xml")
+		xmlContent := fmt.Sprintf(`
+		<domain type='kvm'>
+		  <name>%s</name>
+		  <memory unit='GiB'>2</memory>
+		  <vcpu>2</vcpu>
+		  <os>
+			<type arch='x86_64'>hvm</type>
+			<boot dev='hd'/>
+		  </os>
+		  <features>
+			<acpi/>
+			<apic/>
+		  </features>
+		  <devices>
+			<disk type='file' device='disk'>
+			  <driver name='qemu' type='qcow2'/>
+			  <source file='%s'/>
+			  <target dev='vda' bus='virtio'/>
+			</disk>
+			<interface type='network'>
+			  <source network='default'/>
+			  <mac address='%s'/>
+			  <model type='virtio'/>
+			</interface>
+			<console type='pty'/>
+			<graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
+			  <listen type='address' address='0.0.0.0'/>
+			</graphics>
+		  </devices>
+		</domain>`, vm.Name, vmDiskPath, mac)
+		
+		if err := os.WriteFile(xmlPath, []byte(xmlContent), 0644); err != nil {
+			log.Printf("Failed to write domain XML: %v", err)
+			m.setVMError(vm, fmt.Sprintf("Failed to write domain XML: %v", err))
+			return
+		}
+		
+		// Define the domain
+		cmd = exec.Command("virsh", "define", xmlPath)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("Failed to define domain: %v, output: %s", err, output)
+			m.setVMError(vm, fmt.Sprintf("Failed to define domain: %v", err))
+			return
+		}
+		
+		// Start the domain
+		cmd = exec.Command("virsh", "start", vm.Name)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("Failed to start domain: %v, output: %s", err, output)
+			m.setVMError(vm, fmt.Sprintf("Failed to start domain: %v", err))
+			return
+		}
+		
+		log.Printf("Successfully started VM %s using virsh command line", vm.Name)
+	}
+	
+	// Wait for VM to boot and get IP address
+	var ip string
+	var ipErr error
+	
+	if useLibvirtAPI {
+		domain, err := conn.LookupDomainByName(vm.Name)
+		if err != nil {
+			log.Printf("Failed to lookup domain: %v", err)
+			ip, ipErr = m.waitForIPUsingARP(vm.Name, mac, 5*time.Minute)
+		} else {
+			ip, ipErr = m.waitForIPUsingLibvirt(domain, 5*time.Minute)
+			domain.Free()
+		}
+	} else {
+		ip, ipErr = m.waitForIPUsingARP(vm.Name, mac, 5*time.Minute)
+	}
+	
+	if ipErr != nil {
+		log.Printf("Failed to get VM IP address: %v", ipErr)
+		// Set a partial error but continue
+		vm.Error = fmt.Sprintf("Warning: Could not determine IP address: %v", ipErr)
+	} else {
+		vm.IPAddress = ip
+		log.Printf("VM %s has IP address: %s", vm.Name, ip)
+	}
+	
+	// Set up ngrok tunnel for remote access
+	if ip != "" {
+		ngrokURL, err := m.setupNgrokTunnel(ip, 22)
+		if err != nil {
+			log.Printf("Failed to set up ngrok tunnel: %v", err)
+			// Continue anyway, just log the error
+			vm.Error = fmt.Sprintf("Warning: Could not establish ngrok tunnel: %v", err)
+		} else {
+			vm.NgrokUrl = ngrokURL
+			log.Printf("Established ngrok tunnel for VM %s: %s", vm.Name, ngrokURL)
+		}
+	}
 
 	// Update VM state
 	m.mutex.Lock()
 	vm.State = VMStateRunning
-	vm.IPAddress = fmt.Sprintf("192.168.122.%d", 100+len(m.VMs))
-	vm.NgrokUrl = fmt.Sprintf("https://%s.ngrok.io", vm.ID[:8])
+	if vm.Error != "" && !strings.HasPrefix(vm.Error, "Warning:") {
+		vm.State = VMStateError
+	}
 	m.mutex.Unlock()
 
 	// Save VM information
@@ -221,7 +512,78 @@ func (m *VMManager) provisionVM(vm *VM) {
 		log.Printf("Failed to save VM data: %v", err)
 	}
 
-	log.Printf("VM %s is now running (IP: %s, Ngrok: %s)", vm.Name, vm.IPAddress, vm.NgrokUrl)
+	log.Printf("VM %s is now %s (IP: %s, Ngrok: %s)", vm.Name, vm.State, vm.IPAddress, vm.NgrokUrl)
+}
+
+// Wait for VM to get an IP address using libvirt API
+func (m *VMManager) waitForIPUsingLibvirt(domain *libvirt.Domain, timeout time.Duration) (string, error) {
+	start := time.Now()
+	
+	for time.Since(start) < timeout {
+		// Try to get DHCP lease from libvirt
+		ifaces, err := domain.ListAllInterfaceAddresses(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)
+		if err != nil {
+			log.Printf("Failed to get interface addresses: %v", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		
+		// Look for a valid IP address
+		for _, iface := range ifaces {
+			for _, addr := range iface.Addrs {
+				if addr.Type == libvirt.IP_ADDR_TYPE_IPV4 {
+					return addr.Addr, nil
+				}
+			}
+		}
+		
+		time.Sleep(5 * time.Second)
+	}
+	
+	return "", fmt.Errorf("timeout waiting for IP address")
+}
+
+// Wait for VM to get an IP address using ARP table
+func (m *VMManager) waitForIPUsingARP(vmName string, macAddress string, timeout time.Duration) (string, error) {
+	start := time.Now()
+	normalizedMAC := strings.ToLower(macAddress)
+	
+	for time.Since(start) < timeout {
+		// Try using the domain name in the ARP table
+		out, err := exec.Command("arp", "-an").Output()
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			for _, line := range lines {
+				if strings.Contains(strings.ToLower(line), normalizedMAC) {
+					// Extract IP from ARP output
+					re := regexp.MustCompile(`\(([0-9.]+)\)`)
+					matches := re.FindStringSubmatch(line)
+					if len(matches) > 1 {
+						return matches[1], nil
+					}
+				}
+			}
+		}
+		
+		// Try using virsh domifaddr
+		out, err = exec.Command("virsh", "domifaddr", vmName).Output()
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "ipv4") {
+					fields := strings.Fields(line)
+					if len(fields) >= 4 {
+						ipWithMask := fields[3]
+						return strings.Split(ipWithMask, "/")[0], nil
+					}
+				}
+			}
+		}
+		
+		time.Sleep(5 * time.Second)
+	}
+	
+	return "", fmt.Errorf("timeout waiting for IP address")
 }
 
 // Set VM in error state
@@ -260,9 +622,78 @@ func (m *VMManager) DestroyVM(vmID string) error {
 	
 	// Start VM destruction in background
 	go func() {
-		// In production, this would properly shut down and delete the VM
 		log.Printf("Destroying VM %s...", vm.Name)
-		time.Sleep(2 * time.Second)
+		
+		// Try using libvirt API
+		conn, err := libvirt.NewConnect(m.libvirtURI)
+		if err == nil {
+			defer conn.Close()
+			
+			// Look up domain by name
+			domain, err := conn.LookupDomainByName(vm.Name)
+			if err != nil {
+				log.Printf("Failed to find domain: %v", err)
+			} else {
+				// Check if domain is running
+				state, _, err := domain.GetState()
+				if err == nil && state == libvirt.DOMAIN_RUNNING {
+					// Attempt graceful shutdown first
+					if err := domain.Shutdown(); err != nil {
+						log.Printf("Failed to shutdown domain gracefully: %v", err)
+						// Force destroy if shutdown fails
+						if err := domain.Destroy(); err != nil {
+							log.Printf("Failed to destroy domain: %v", err)
+						}
+					}
+					
+					// Wait for shutdown
+					for i := 0; i < 30; i++ {
+						state, _, err := domain.GetState()
+						if err != nil || state == libvirt.DOMAIN_SHUTOFF {
+							break
+						}
+						time.Sleep(1 * time.Second)
+					}
+				}
+				
+				// Undefine domain (remove configuration)
+				if err := domain.Undefine(); err != nil {
+					log.Printf("Failed to undefine domain: %v", err)
+				}
+				
+				domain.Free()
+			}
+		} else {
+			// Use virsh commands as fallback
+			log.Printf("Using virsh commands for VM destruction")
+			
+			// Try to shut down gracefully first
+			cmdShutdown := exec.Command("virsh", "shutdown", vm.Name)
+			if err := cmdShutdown.Run(); err != nil {
+				log.Printf("Failed to shutdown VM gracefully: %v", err)
+				
+				// Force destroy if shutdown fails
+				cmdDestroy := exec.Command("virsh", "destroy", vm.Name)
+				if err := cmdDestroy.Run(); err != nil {
+					log.Printf("Failed to destroy VM: %v", err)
+				}
+			}
+			
+			// Wait a bit for shutdown to complete
+			time.Sleep(5 * time.Second)
+			
+			// Undefine domain
+			cmdUndefine := exec.Command("virsh", "undefine", vm.Name)
+			if err := cmdUndefine.Run(); err != nil {
+				log.Printf("Failed to undefine VM: %v", err)
+			}
+		}
+		
+		// Remove VM storage
+		vmDiskPath := filepath.Join(m.baseDir, "vm-instances", vmID, "disk.qcow2")
+		if err := os.Remove(vmDiskPath); err != nil {
+			log.Printf("Failed to remove VM disk: %v", err)
+		}
 		
 		m.mutex.Lock()
 		defer m.mutex.Unlock()
@@ -335,10 +766,12 @@ func (m *VMManager) ResetVM(vmID string) error {
 		return fmt.Errorf("VM not found: %s", vmID)
 	}
 	
+	// Capture task ID for reference
+	taskID := vm.TaskID
+	
 	// Update VM state
 	oldState := vm.State
-	vm.State = VMStateCreating
-	vm.Error = ""
+	vm.State = VMStateDestroying
 	m.mutex.Unlock()
 	
 	// Save VM state
@@ -350,21 +783,21 @@ func (m *VMManager) ResetVM(vmID string) error {
 	go func() {
 		log.Printf("Resetting VM %s from state %s...", vm.Name, oldState)
 		
-		// In production, this would properly reset the VM to a clean state
-		// For this demo, we'll simulate VM reset with a delay
-		time.Sleep(5 * time.Second)
-		
-		// Update VM state
-		m.mutex.Lock()
-		vm.State = VMStateRunning
-		m.mutex.Unlock()
-		
-		// Save VM information
-		if err := m.saveVM(vm); err != nil {
-			log.Printf("Failed to save VM data: %v", err)
+		// Destroy the existing VM
+		if err := m.DestroyVM(vmID); err != nil {
+			log.Printf("Error destroying VM during reset: %v", err)
 		}
 		
-		log.Printf("VM %s has been reset", vm.Name)
+		// Wait for destruction to complete
+		time.Sleep(5 * time.Second)
+		
+		// Create a new VM with the same task ID
+		if taskID != "" {
+			_, err := m.CreateVM(taskID)
+			if err != nil {
+				log.Printf("Error creating new VM during reset: %v", err)
+			}
+		}
 	}()
 	
 	return nil
@@ -398,8 +831,7 @@ func (m *VMManager) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Task ID is required", http.StatusBadRequest)
 		return
 	}
-	
-	vm, err := m.CreateVM(request.TaskID)
+vm, err := m.CreateVM(request.TaskID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -461,6 +893,15 @@ func (m *VMManager) handleResetVM(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	vmID := vars["vmId"]
 	
+	var request struct {
+		Force bool `json:"force"`
+	}
+	
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		// If no body provided, assume non-forced reset
+		request.Force = false
+	}
+	
 	if err := m.ResetVM(vmID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -490,11 +931,29 @@ func (m *VMManager) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	vmCount := len(m.VMs)
 	m.mutex.Unlock()
 	
+	// Test libvirt connection
+	libvirtStatus := "unavailable"
+	conn, err := libvirt.NewConnect(m.libvirtURI)
+	if err == nil {
+		libvirtStatus = "connected"
+		hypervisor, _ := conn.GetType()
+		version, _ := conn.GetVersion()
+		libvirtStatus = fmt.Sprintf("connected to %s v%d", hypervisor, version)
+		conn.Close()
+	} else {
+		// Try virsh command line as fallback
+		cmd := exec.Command("virsh", "--version")
+		if err := cmd.Run(); err == nil {
+			libvirtStatus = "available via CLI"
+		}
+	}
+	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "healthy",
 		"vm_count": vmCount,
 		"template_vm": m.templateVM,
+		"libvirt_status": libvirtStatus,
 		"version": "1.0.0",
 	})
 }
@@ -531,4 +990,4 @@ func main() {
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
-}
+}	

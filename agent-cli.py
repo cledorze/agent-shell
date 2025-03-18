@@ -9,6 +9,7 @@ import argparse
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.prompt import Confirm
 
 # Initialize rich console for colored output
 console = Console()
@@ -176,6 +177,157 @@ def check_health():
     except requests.exceptions.RequestException as e:
         console.print(f"[bold red]Error checking health:[/bold red] {str(e)}")
 
+def list_vms():
+    """List all VMs"""
+    url = f"{API_URL}/vms"
+    
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("ID")
+        table.add_column("Name")
+        table.add_column("Status")
+        table.add_column("IP Address")
+        table.add_column("Ngrok URL")
+        table.add_column("Task ID")
+        
+        for vm in data.get("vms", []):
+            vm_id = vm.get("id", "Unknown")[:8] + "..."
+            table.add_row(
+                vm_id,
+                vm.get("name", "Unknown"),
+                vm.get("state", "Unknown"),
+                vm.get("ip_address", ""),
+                vm.get("ngrok_url", ""),
+                vm.get("task_id", "")[:8] + "..." if vm.get("task_id") else ""
+            )
+        
+        console.print("[bold]Virtual Machines:[/bold]")
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[bold red]Error listing VMs:[/bold red] {str(e)}")
+
+def create_vm(task_id):
+    """Create a new VM for a task"""
+    url = f"{API_URL}/vms"
+    
+    data = {
+        "task_id": task_id
+    }
+    
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        response.raise_for_status()
+        vm = response.json()
+        
+        console.print(Panel(
+            f"[bold]VM Creation Started[/bold]\n"
+            f"[bold]ID:[/bold] {vm['id']}\n"
+            f"[bold]Name:[/bold] {vm['name']}\n"
+            f"[bold]Status:[/bold] {vm['state']}\n"
+            f"[bold]Task ID:[/bold] {vm['task_id']}",
+            title="Virtual Machine",
+            border_style="green"
+        ))
+        
+        console.print("[yellow]VM creation is running in the background. Use 'vm get' to check status.[/yellow]")
+        
+    except Exception as e:
+        console.print(f"[bold red]Error creating VM:[/bold red] {str(e)}")
+
+def get_vm(vm_id):
+    """Get VM details"""
+    url = f"{API_URL}/vms/{vm_id}"
+    
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        vm = response.json()
+        
+        # Determine color based on state
+        color = "green" if vm.get("state") == "running" else "yellow" if vm.get("state") == "creating" else "red"
+        
+        console.print(Panel(
+            f"[bold]VM Details[/bold]\n"
+            f"[bold]ID:[/bold] {vm.get('id', 'Unknown')}\n"
+            f"[bold]Name:[/bold] {vm.get('name', 'Unknown')}\n"
+            f"[bold]Status:[/bold] [bold {color}]{vm.get('state', 'Unknown')}[/bold {color}]\n"
+            f"[bold]IP Address:[/bold] {vm.get('ip_address', 'Not assigned')}\n"
+            f"[bold]Ngrok URL:[/bold] {vm.get('ngrok_url', 'Not available')}\n"
+            f"[bold]SSH Username:[/bold] {vm.get('ssh_username', 'agent')}\n"
+            f"[bold]SSH Password:[/bold] {vm.get('ssh_password', '******')}\n"
+            f"[bold]Task ID:[/bold] {vm.get('task_id', 'None')}\n"
+            f"[bold]Created At:[/bold] {vm.get('created_at', 'Unknown')}\n"
+            f"[bold]Error:[/bold] {vm.get('error', 'None')}",
+            title="Virtual Machine",
+            border_style=color
+        ))
+        
+        # Show SSH command if ngrok URL is available
+        if vm.get("ngrok_url") and vm.get("ssh_username"):
+            console.print(f"\n[bold]SSH Command:[/bold]")
+            console.print(f"ssh {vm.get('ssh_username')}@{vm.get('ngrok_url').replace('tcp://', '').replace(':', ' -p ')}")
+            console.print("[dim]Password authentication will be required.[/dim]")
+        
+    except Exception as e:
+        console.print(f"[bold red]Error getting VM details:[/bold red] {str(e)}")
+
+def destroy_vm(vm_id):
+    """Destroy a VM"""
+    url = f"{API_URL}/vms/{vm_id}"
+    
+    # Confirm destruction
+    console.print(f"[bold red]WARNING:[/bold red] This will permanently destroy VM {vm_id}")
+    if not Confirm.ask("Are you sure you want to continue?"):
+        console.print("Operation cancelled")
+        return
+    
+    try:
+        response = requests.delete(url, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        
+        console.print(Panel(
+            f"[bold]VM Destruction Initiated[/bold]\n"
+            f"[bold]Status:[/bold] {result.get('status', 'Unknown')}\n"
+            f"[bold]Message:[/bold] {result.get('message', 'No message')}",
+            title="Virtual Machine",
+            border_style="red"
+        ))
+        
+    except Exception as e:
+        console.print(f"[bold red]Error destroying VM:[/bold red] {str(e)}")
+
+def reset_vm(vm_id):
+    """Reset a VM"""
+    url = f"{API_URL}/vms/{vm_id}/reset"
+    
+    # Confirm reset
+    console.print(f"[bold yellow]WARNING:[/bold yellow] This will reset VM {vm_id} to initial state")
+    if not Confirm.ask("Are you sure you want to continue?"):
+        console.print("Operation cancelled")
+        return
+    
+    try:
+        response = requests.post(url, json={"force": True}, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        
+        console.print(Panel(
+            f"[bold]VM Reset Initiated[/bold]\n"
+            f"[bold]Status:[/bold] {result.get('status', 'Unknown')}\n"
+            f"[bold]Message:[/bold] {result.get('message', 'No message')}",
+            title="Virtual Machine",
+            border_style="yellow"
+        ))
+        
+    except Exception as e:
+        console.print(f"[bold red]Error resetting VM:[/bold red] {str(e)}")
+
 def main():
     parser = argparse.ArgumentParser(description="Command-line client for the Linux Agent System")
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
@@ -199,6 +351,24 @@ def main():
     commands_parser = subparsers.add_parser("commands", help="Get commands for a specific task")
     commands_parser.add_argument("task_id", help="Task ID")
     
+    # VM management commands
+    vm_parser = subparsers.add_parser("vm", help="Virtual Machine management")
+    vm_subparsers = vm_parser.add_subparsers(dest="vm_command", help="VM command to execute")
+    
+    vm_list_parser = vm_subparsers.add_parser("list", help="List all VMs")
+    
+    vm_create_parser = vm_subparsers.add_parser("create", help="Create a new VM")
+    vm_create_parser.add_argument("task_id", help="Task ID for the VM")
+    
+    vm_get_parser = vm_subparsers.add_parser("get", help="Get details of a VM")
+    vm_get_parser.add_argument("vm_id", help="VM ID")
+    
+    vm_destroy_parser = vm_subparsers.add_parser("destroy", help="Destroy a VM")
+    vm_destroy_parser.add_argument("vm_id", help="VM ID")
+    
+    vm_reset_parser = vm_subparsers.add_parser("reset", help="Reset a VM")
+    vm_reset_parser.add_argument("vm_id", help="VM ID")
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -213,6 +383,19 @@ def main():
         get_task_status(args.task_id)
     elif args.command == "commands":
         get_task_commands(args.task_id)
+    elif args.command == "vm":
+        if args.vm_command == "list":
+            list_vms()
+        elif args.vm_command == "create":
+            create_vm(args.task_id)
+        elif args.vm_command == "get":
+            get_vm(args.vm_id)
+        elif args.vm_command == "destroy":
+            destroy_vm(args.vm_id)
+        elif args.vm_command == "reset":
+            reset_vm(args.vm_id)
+        else:
+            vm_parser.print_help()
     else:
         parser.print_help()
 

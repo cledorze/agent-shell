@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"bytes"
 	"io"
 	"net/http"
 	"os"
@@ -54,8 +55,7 @@ func createTaskHandler(orchestratorURL string) http.HandlerFunc {
 		resp, err := http.Post(
 			orchestratorURL+"/tasks",
 			"application/json",
-			io.NopCloser(io.Reader(io.NopCloser(io.MultiReader(io.NopCloser(io.Reader(io.Buffer(body))))))),
-		)
+			io.NopCloser(bytes.NewReader(body)))
 		if err != nil {
 			logger.Errorf("Failed to forward request to orchestrator: %v", err)
 			http.Error(w, "Failed to forward request to orchestrator", http.StatusInternalServerError)

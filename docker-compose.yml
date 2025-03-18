@@ -5,7 +5,7 @@ services:
     build:
       context: ./api_gateway
       dockerfile: Dockerfile
-    image: glinux-agent-api-gateway:local
+    image: localhost/linux-agent-api-gateway:local
     ports:
       - "8080:8080"
     volumes:
@@ -21,7 +21,7 @@ services:
     build:
       context: ./orchestrator
       dockerfile: Dockerfile
-    image: glinux-agent-orchestrator:local  
+    image: localhost/linux-agent-orchestrator:local  
     ports:
       - "8081:8081"
     volumes:
@@ -41,7 +41,7 @@ services:
     build:
       context: ./agent_system
       dockerfile: Dockerfile
-    image: glinux-agent-agent-system:local
+    image: localhost/linux-agent-agent-system:local
     ports:
       - "8082:8082"
     volumes:
@@ -57,13 +57,11 @@ services:
     build:
       context: ./vm_manager
       dockerfile: Dockerfile
-    image: glinux-agent-vm-manager:local
+    image: localhost/linux-agent-vm-manager:local
     ports:
       - "8083:8083"
     volumes:
       - ./vm_manager:/app
-      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
-    privileged: true
     networks:
       - agent-network
     environment:
@@ -73,7 +71,7 @@ services:
     build:
       context: ./command_executor
       dockerfile: Dockerfile
-    image: glinux-agent-command-executor:local
+    image: localhost/linux-agent-command-executor:local
     ports:
       - "8084:8084"
     volumes:
@@ -85,7 +83,7 @@ services:
     build:
       context: ./knowledge_system
       dockerfile: Dockerfile
-    image: glinux-agent-knowledge-system:local
+    image: localhost/linux-agent-knowledge-system:local
     ports:
       - "8085:8085"
     volumes:

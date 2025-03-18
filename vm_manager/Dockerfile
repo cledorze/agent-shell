@@ -1,28 +1,28 @@
-FROM golang:1.19-bullseye
-
-# Install libvirt development packages
-RUN apt-get update && apt-get install -y \
-    libvirt-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+FROM golang:1.19-alpine AS builder
 
 WORKDIR /app
 
-# Copy go.mod and go.sum files
+# Copy go.mod
 COPY go.mod ./
-COPY go.sum ./
+
+# Copy source code
+COPY cmd/ ./cmd/
 
 # Download dependencies
 RUN go mod download
 
-# Copy source code
-COPY . .
+# Build the application (statically linked)
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o vm_manager ./cmd/vm_manager
 
-# Build the application
-RUN go build -o vm_manager ./cmd/vm_manager
+FROM alpine:3.14
 
-# Expose the port
+WORKDIR /app
+
+# Copy binary from builder stage
+COPY --from=builder /app/vm_manager /app/
+
+# Expose port
 EXPOSE 8083
 
-# Run the application
-CMD ["./vm_manager"]
+# Run the binary
+CMD ["/app/vm_manager"]

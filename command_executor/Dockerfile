@@ -1,20 +1,23 @@
-FROM rust:1.75.0-slim
+FROM rust:1.70-slim as builder
 
 WORKDIR /app
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
 # Copy Cargo.toml and source code
-COPY . .
+COPY Cargo.toml .
+COPY src ./src
 
 # Build the application
 RUN cargo build --release
 
-# Expose the port
+FROM debian:bullseye-slim
+
+WORKDIR /app
+
+# Copy binary from builder stage
+COPY --from=builder /app/target/release/command_executor /app/
+
+# Expose port
 EXPOSE 8084
 
-# Run the application
-CMD ["./target/release/command_executor"]
+# Run the binary
+CMD ["/app/command_executor"]

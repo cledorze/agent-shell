@@ -3,25 +3,14 @@ import requests
 import logging
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from config import KNOWLEDGE_SYSTEM_URL, COMMAND_EXECUTOR_URL, VM_MANAGER_URL, logger
 from models.models import TaskRequest, ChatRequest, TaskStatus, ChatResponse, ResetVMRequest
 from api.ui_handler import serve_frontend as ui_frontend
-
-from handlers.chat_handler import handle_chat_request
-from handlers.vm_manager import create_vm_for_task, reset_vm, get_vm_details
-from handlers.command_handler import execute_command_on_vm, execute_command_locally
-from handlers.task_processor import process_task as task_processor_process_task
 from robust_vm_manager import RobustVMManager as VMManager
-#from vm_manager import VMManager
-
-
-
 
 router = APIRouter()
 vm_manager = VMManager()
-
-
 
 # Dépendances pour obtenir les composants
 async def get_components():
@@ -35,28 +24,6 @@ async def serve_frontend():
 @router.get("/health")
 async def health_check():
     """Health check endpoint."""
-    # Check components' health
-    vm_manager_healthy = False
-    try:
-        vm_response = requests.get(f"{VM_MANAGER_URL}/health", timeout=5)
-        vm_manager_healthy = vm_response.status_code == 200
-    except Exception:
-        logger.warning("VM Manager health check failed")
-    
-    knowledge_system_healthy = False
-    try:
-        knowledge_response = requests.get(f"{KNOWLEDGE_SYSTEM_URL}/health", timeout=5)
-        knowledge_system_healthy = knowledge_response.status_code == 200
-    except Exception:
-        logger.warning("Knowledge System health check failed")
-    
-    command_executor_healthy = False
-    try:
-        executor_response = requests.get(f"{COMMAND_EXECUTOR_URL}/health", timeout=5)
-        command_executor_healthy = executor_response.status_code == 200
-    except Exception:
-        logger.warning("Command Executor health check failed")
-    
     # Get components
     command_generator, execution_engine, state_manager, llm_service = await get_components()
     
@@ -68,30 +35,59 @@ async def health_check():
     except Exception:
         logger.warning("Knowledge System health check failed")
     
-    # Check command executor health
-    command_executor_healthy = False
-    try:
-        executor_response = requests.get(f"{COMMAND_EXECUTOR_URL}/health", timeout=2)
-        command_executor_healthy = executor_response.status_code == 200
-    except Exception:
-        logger.warning("Command Executor health check failed")
-    
-    # Use the VM Manager's own status
+    # Check VM manager availability
     vm_manager_healthy = vm_manager.is_available()
-        
+    
     return {
         "status": "healthy",
         "components": {
             "api": "healthy",
             "vm_manager": "healthy" if vm_manager_healthy else "unhealthy",
             "knowledge_system": "healthy" if knowledge_system_healthy else "unhealthy",
-            "command_executor": "healthy" if command_executor_healthy else "unhealthy",
             "state_manager": "healthy",
             "execution_engine": "healthy",
             "command_generator": "healthy",
             "llm_service": "healthy" if llm_service.api_key else "missing API key"
         }
     }
+
+async def process_task(task_id, task, execute, command_generator, execution_engine, state_manager):
+    """Process a task and execute commands if requested."""
+    try:
+        # Update state to processing
+        state = state_manager.get_state(task_id)
+        state.status = "running"
+        state_manager.save_state(state)
+        
+        # Generate execution plan
+        logger.info(f"Task {task_id}: Generating execution plan")
+        plan = command_generator.generate_execution_plan(task)
+        
+        # Update state with plan
+        state_manager.update_plan(task_id, plan)
+        
+        if execute:
+            # Execute the plan directly with execution_engine
+            logger.info(f"Task {task_id}: Executing plan")
+            result = execution_engine.execute_plan(plan)
+            success = result.get("success", False)
+            
+            # Record execution results
+            for step_result in result.get("steps_results", []):
+                for cmd_result in step_result.get("commands_executed", []):
+                    state_manager.record_command(task_id, cmd_result.get("command", ""), cmd_result)
+        else:
+            # Just mark as completed without execution
+            success = True
+        
+        # Mark as completed
+        state_manager.complete_task(task_id, success)
+            
+        logger.info(f"Task {task_id}: Processing completed")
+            
+    except Exception as e:
+        logger.error(f"Error processing task {task_id}: {str(e)}")
+        state_manager.complete_task(task_id, False)
 
 @router.post("/api/tasks", response_model=TaskStatus)
 async def create_task(task_request: TaskRequest, background_tasks: BackgroundTasks):
@@ -118,7 +114,7 @@ async def create_task(task_request: TaskRequest, background_tasks: BackgroundTas
     
     # Start processing in the background
     background_tasks.add_task(
-        task_processor_process_task,
+        process_task,
         task_id=request_id,
         task=task_request.task,
         execute=task_request.execute,
@@ -132,57 +128,8 @@ async def create_task(task_request: TaskRequest, background_tasks: BackgroundTas
         "request_id": request_id,
         "status": "accepted",
         "message": "Task has been accepted and is being processed",
-        "details": {"estimated_completion_time": task_request.timeout}
+        "details": {"estimated_completion_time": task_request.timeout or 300}
     }
-
-@router.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
-    """Handle chat messages and process instructions."""
-    # Get components
-    command_generator, execution_engine, state_manager, llm_service = await get_components()
-    
-    # Process the chat request
-    if request.task_id:
-        response = await chat_handler.handle_chat_request(
-            request, 
-            command_generator, 
-            execution_engine, 
-            state_manager, 
-            llm_service
-        )
-        return response
-    else:
-        # Create a new task
-        task_id = str(uuid.uuid4())
-        
-        # Initialize state
-        state = state_manager.create_state(task_id, request.message)
-        
-        # Add initial message to conversation history
-        state_manager.add_conversation(task_id, "user", request.message)
-        
-        # Process task in background
-        background_tasks.add_task(
-            task_processor.process_task,
-            task_id=task_id,
-            task=request.message,
-            execute=request.execute,
-            command_generator=command_generator,
-            execution_engine=execution_engine,
-            state_manager=state_manager
-        )
-        
-        # Generate initial response
-        response = f"I'll help you with that task. I'm now processing: '{request.message}'"
-        
-        # Add response to conversation history
-        state_manager.add_conversation(task_id, "assistant", response)
-        
-        return {
-            "response": response,
-            "task_id": task_id,
-            "status": "initializing"
-        }
 
 @router.get("/api/tasks/{task_id}")
 async def get_task_status(task_id: str):
@@ -203,16 +150,21 @@ async def get_task_status(task_id: str):
         "total_steps": state.total_steps,
         "start_time": state.start_time,
         "end_time": state.end_time,
-        "executed_commands": state.executed_commands,
+        "executed_commands": state.executed_commands if hasattr(state, 'executed_commands') else [],
     }
     
     # Add command outputs if available
-    if state.command_outputs:
+    if hasattr(state, 'command_outputs') and state.command_outputs:
         response["command_outputs"] = state.command_outputs
     
     # Add execution plan if available
-    if state.execution_plan:
+    if hasattr(state, 'execution_plan') and state.execution_plan:
         response["execution_plan"] = state.execution_plan
+    
+    # Add VM info if available
+    vm_id = state_manager.get_variable(task_id, "vm_id")
+    if vm_id:
+        response["vm_id"] = vm_id
     
     return response
 
@@ -228,7 +180,7 @@ async def get_task_commands(task_id: str):
     
     # Extract commands from execution plan
     commands = []
-    if state.execution_plan and "steps" in state.execution_plan:
+    if hasattr(state, 'execution_plan') and state.execution_plan and "steps" in state.execution_plan:
         for step in state.execution_plan["steps"]:
             if "commands" in step:
                 commands.extend(step["commands"])
@@ -239,52 +191,48 @@ async def get_task_commands(task_id: str):
         "status": state.status,
         "commands": commands,
         "command_count": len(commands),
-        "executed_commands": state.executed_commands
+        "executed_commands": state.executed_commands if hasattr(state, 'executed_commands') else []
     }
 
-@router.get("/api/tasks/{task_id}/vm")
-async def get_task_vm(task_id: str):
-    """Get the VM information for a specific task."""
-    # Get components
-    _, _, state_manager, _ = await get_components()
-    
-    state = state_manager.get_state(task_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    # Get VM info from state
-    vm_id = state_manager.get_variable(task_id, "vm_id")
-    if not vm_id:
-        raise HTTPException(status_code=404, detail="No VM found for this task")
-    
-    # Get VM details from VM Manager
-    return await vm_manager.get_vm_details(vm_id)
-
-@router.post("/api/tasks/{task_id}/reset-vm")
-async def reset_task_vm(task_id: str, request: ResetVMRequest = ResetVMRequest()):
-    """Reset the VM for a specific task."""
-    # Get components
-    _, _, state_manager, _ = await get_components()
-    
-    state = state_manager.get_state(task_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    # Get VM info from state
-    vm_id = state_manager.get_variable(task_id, "vm_id")
-    if not vm_id:
-        raise HTTPException(status_code=404, detail="No VM found for this task")
-    
-    # Reset the VM
-    result = await vm_manager.reset_vm(vm_id, request.force)
-    if not result:
-        raise HTTPException(status_code=500, detail="Failed to reset VM")
-    
-    return {
-        "message": "VM reset initiated",
-        "vm_id": vm_id,
-        "task_id": task_id
-    }
+@router.delete("/api/vms/{vm_id}")
+async def destroy_vm(vm_id: str):
+    """Destroy a VM completely."""
+    try:
+        # Get components
+        _, _, state_manager, _ = await get_components()
+        
+        result = await vm_manager.destroy_vm(vm_id)
+        if not result:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to destroy VM", "vm_id": vm_id}
+            )
+        
+        # Si la VM est associée à une tâche, mettre à jour l'état
+        for task in state_manager.list_tasks():
+            task_id = task.get("task_id")
+            if task_id:
+                vm_task_id = state_manager.get_variable(task_id, "vm_id")
+                if vm_task_id == vm_id:
+                    # Supprimer la référence à la VM dans l'état de la tâche
+                    state_manager.set_variable(task_id, "vm_id", None)
+                    state_manager.set_variable(task_id, "vm_destroyed", True)
+                    logger.info(f"Updated task {task_id} to reflect VM destruction")
+        
+        return {
+            "message": "VM destruction initiated",
+            "vm_id": vm_id,
+            "status": result.get("status", "unknown")
+        }
+    except Exception as e:
+        logger.error(f"Error destroying VM: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Failed to destroy VM",
+                "message": str(e)
+            }
+        )
 
 @router.get("/api/tasks")
 async def list_tasks(limit: int = 10):

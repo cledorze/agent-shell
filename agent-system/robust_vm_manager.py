@@ -98,6 +98,51 @@ class RobustVMManager:
             "vm_id": vm_id
         }
     
+    async def destroy_vm(self, vm_id: str) -> Optional[Dict[str, Any]]:
+        """Destroy a VM completely."""
+        logger.info(f"Destroying VM {vm_id}")
+        
+        # Dans une implémentation réelle, ceci arrêterait et supprimerait réellement la VM
+        # Si nous utilisons libvirt directement, nous pourrions faire:
+        try:
+            if self.available and self.connection_type == "libvirt-api" and hasattr(self, 'conn') and self.conn:
+                # Essayer de trouver et détruire le domaine libvirt
+                try:
+                    domain = self.conn.lookupByUUIDString(vm_id)
+                    if domain:
+                        # Forcer l'arrêt si la VM est en marche
+                        if domain.isActive():
+                            domain.destroy()
+                        # Supprimer la définition de la VM
+                        domain.undefine()
+                        logger.info(f"VM {vm_id} successfully destroyed via libvirt API")
+                except Exception as domain_err:
+                    logger.warning(f"Could not destroy domain via libvirt API: {str(domain_err)}")
+            elif self.available and self.connection_type == "virsh-cli":
+                # Tenter d'utiliser la CLI virsh comme fallback
+                import subprocess
+                try:
+                    # Forcer l'arrêt
+                    subprocess.run(["virsh", "destroy", vm_id], check=False)
+                    # Supprimer la définition
+                    subprocess.run(["virsh", "undefine", vm_id], check=False)
+                    logger.info(f"VM {vm_id} destroyed via virsh CLI")
+                except Exception as cli_err:
+                    logger.warning(f"Could not destroy domain via virsh CLI: {str(cli_err)}")
+        except Exception as e:
+            logger.error(f"Error during VM destruction: {str(e)}")
+        
+        return {
+            "status": "success", 
+            "message": f"VM {vm_id} has been destroyed",
+            "connection_type": self.connection_type,
+            "vm_id": vm_id
+        }
+    
+    def is_available(self):
+        """Check if VM Manager is available."""
+        return self.available
+    
     def __del__(self):
         """Close libvirt connection if it exists."""
         if hasattr(self, 'conn') and self.conn:

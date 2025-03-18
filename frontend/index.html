@@ -330,6 +330,24 @@
                         });
                     }
                     
+                    // Ajouter les informations VM et le bouton de destruction
+                    const vm_id = data.vm_id || (data.vm_info ? data.vm_info.id : null);
+                    if (vm_id) {
+                        detailsHtml += `
+                            <div class="mt-4 p-3 border border-blue-200 rounded bg-blue-50">
+                                <h4 class="font-bold mb-2">VM Information</h4>
+                                <p><strong>VM ID:</strong> ${vm_id}</p>
+                                ${data.vm_info ? `<p><strong>Name:</strong> ${data.vm_info.name}</p>` : ''}
+                                ${data.vm_info ? `<p><strong>State:</strong> ${data.vm_info.state}</p>` : ''}
+                                <button 
+                                    class="mt-3 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500"
+                                    onclick="destroyVM('${vm_id}')">
+                                    Destroy VM
+                                </button>
+                            </div>
+                        `;
+                    }
+                    
                     detailsHtml += `</div>`;
                     
                     addMessage(detailsHtml, 'agent', true);
@@ -339,6 +357,48 @@
                     
                 } catch (error) {
                     console.error('Error viewing task:', error);
+                }
+            }
+            
+            // Fonction pour détruire une VM
+            async function destroyVM(vmId) {
+                if (!vmId) {
+                    alert("Aucun identifiant de VM fourni");
+                    return;
+                }
+                
+                if (!confirm(`Êtes-vous sûr de vouloir détruire la VM ${vmId}? Cette action est irréversible.`)) {
+                    return;
+                }
+                
+                try {
+                    // Afficher un indicateur de chargement
+                    addMessage("Destruction de la VM en cours...", 'agent');
+                    
+                    const response = await fetch(`/api/vms/${vmId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        addMessage(`VM ${vmId} destruction initiée: ${data.message}`, 'agent');
+                        // Recharger la liste des tâches
+                        if (tasksModal.classList.contains('hidden') === false) {
+                            loadTasks();
+                        }
+                    } else {
+                        let errorText = "";
+                        try {
+                            const errorData = await response.json();
+                            errorText = errorData.error || errorData.message || response.statusText;
+                        } catch {
+                            errorText = response.statusText;
+                        }
+                        addMessage(`Erreur lors de la destruction de la VM: ${errorText}`, 'agent');
+                    }
+                } catch (error) {
+                    console.error('Error destroying VM:', error);
+                    addMessage(`Erreur réseau lors de la destruction de la VM: ${error.message}`, 'agent');
                 }
             }
             
@@ -399,6 +459,9 @@
                     tasksModal.classList.add('hidden');
                 }
             });
+            
+            // Expose the destroyVM function globally so it can be used with onclick
+            window.destroyVM = destroyVM;
         });
     </script>
 </body>

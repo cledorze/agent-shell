@@ -70,6 +70,10 @@ services:
       - ENABLE_SIMULATION=true
     volumes:
       - vm_data:/var/lib/linux-agent-system/vms
+      - /var/lib/linux-agent-system:/var/lib/linux-agent-system
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
+     privileged: true
     restart: unless-stopped
 
   command-executor:

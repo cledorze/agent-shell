@@ -155,7 +155,8 @@ func NewVMManager(config Config) (*VMManager, error) {
 		logger.Printf("Warning: Failed to load existing VMs: %v", err)
 	}
 
-	// Initialize random number generator
+	// Initialize random number generator for Go versions before 1.20
+	// For Go 1.20+, math/rand is automatically seeded
 	rand.Seed(time.Now().UnixNano())
 
 	return manager, nil
@@ -381,7 +382,7 @@ func (m *VMManager) provisionVM(vm *VM) {
 			</channel>
 		</devices>
 	</domain>`, vm.Name, diskPath, cloudInitISOPath, 
-		networkName, macAddress)
+		m.networkName, macAddress)  // FIXED: Changed networkName to m.networkName
 
 	// Define domain
 	m.mutex.RLock()
@@ -531,10 +532,11 @@ local-hostname: %s
 	
 	// Generate ISO
 	isoPath := filepath.Join(vmDir, "cloud-init.iso")
-	cmd := exec.Command("genisoimage", "-output", isoPath, "-volid", "cidata", 
-		"-joliet", "-rock", 
-		filepath.Join(cloudInitDir, "user-data"),
-		filepath.Join(cloudInitDir, "meta-data"))
+	// Replace the genisoimage command with mkisofs
+        cmd := exec.Command("mkisofs", "-output", isoPath, "-volid", "cidata",
+            "-joliet", "-rock",
+            filepath.Join(cloudInitDir, "user-data"),
+            filepath.Join(cloudInitDir, "meta-data"))
 	
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -560,25 +562,61 @@ func (m *VMManager) waitForIPAddress(domain *libvirt.Domain, timeout time.Durati
 			continue
 		}
 		
-		// First try: Use QEMU guest agent (most reliable)
-		ifaces, err := domain.InterfaceAddresses(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT, 0)
+		// First try: Use QEMU guest agent command
+		ipAddress, err := m.getIPAddressWithQEMUGuestAgent(domain)
+		if err == nil && ipAddress != "" {
+			return ipAddress, nil
+		}
+		
+		// Second approach: Try alternative methods
+		// Try using virsh command directly
+		cmd := exec.Command("virsh", "domifaddr", domain.Name, "--source", "agent")
+		output, err := cmd.CombinedOutput()
 		if err == nil {
-			for _, iface := range ifaces {
-				for _, addr := range iface.Addrs {
-					if addr.Type == libvirt.IP_ADDR_TYPE_IPV4 {
-						return addr.Addr, nil
+			lines := strings.Split(string(output), "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "ipv4") {
+					fields := strings.Fields(line)
+					if len(fields) >= 4 {
+						ipWithCIDR := fields[3]
+						ip := strings.Split(ipWithCIDR, "/")[0]
+						if ip != "" {
+							return ip, nil
+						}
 					}
 				}
 			}
 		}
 		
-		// Second try: Use DHCP leases
-		ifaces, err = domain.InterfaceAddresses(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE, 0)
+		// Third approach: Try using libvirt DHCP leases if QEMU agent fails
+		// Try with arp-scan if available
+		cmd = exec.Command("arp-scan", "--localnet")
+		output, err = cmd.CombinedOutput()
 		if err == nil {
-			for _, iface := range ifaces {
-				for _, addr := range iface.Addrs {
-					if addr.Type == libvirt.IP_ADDR_TYPE_IPV4 {
-						return addr.Addr, nil
+			// Get the MAC address of the domain
+			macCmd := exec.Command("virsh", "domiflist", domain.Name)
+			macOutput, err := macCmd.CombinedOutput()
+			if err == nil {
+				macLines := strings.Split(string(macOutput), "\n")
+				var macAddress string
+				for _, line := range macLines {
+					if strings.Contains(line, "virtio") {
+						fields := strings.Fields(line)
+						if len(fields) >= 5 {
+							macAddress = fields[4]
+						}
+					}
+				}
+				
+				if macAddress != "" {
+					arpLines := strings.Split(string(output), "\n")
+					for _, line := range arpLines {
+						if strings.Contains(strings.ToLower(line), strings.ToLower(macAddress)) {
+							fields := strings.Fields(line)
+							if len(fields) >= 1 {
+								return fields[0], nil
+							}
+						}
 					}
 				}
 			}
@@ -588,6 +626,54 @@ func (m *VMManager) waitForIPAddress(domain *libvirt.Domain, timeout time.Durati
 	}
 	
 	return "", fmt.Errorf("timeout waiting for IP address")
+}
+
+// getIPAddressWithQEMUGuestAgent gets IP address using the QEMU guest agent
+func (m *VMManager) getIPAddressWithQEMUGuestAgent(domain *libvirt.Domain) (string, error) {
+	// Get domain name
+	domainName, err := domain.GetName()
+	if err != nil {
+		return "", fmt.Errorf("failed to get domain name: %w", err)
+	}
+	
+	// Use virsh to execute qemu-agent-command
+	cmd := exec.Command("virsh", "qemu-agent-command", domainName, 
+		`{"execute":"guest-network-get-interfaces"}`)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get network interfaces: %w, output: %s", err, output)
+	}
+	
+	// Parse JSON output to find IPv4 address
+	var result struct {
+		Return []struct {
+			Name        string `json:"name"`
+			HardwareAddress string `json:"hardware-address"`
+			IPAddresses []struct {
+				Type    string `json:"ip-address-type"`
+				Address string `json:"ip-address"`
+				Prefix  int    `json:"prefix"`
+			} `json:"ip-addresses"`
+		} `json:"return"`
+	}
+	
+	if err := json.Unmarshal(output, &result); err != nil {
+		return "", fmt.Errorf("failed to parse interface data: %w", err)
+	}
+	
+	// Find first non-loopback IPv4 address
+	for _, iface := range result.Return {
+		if iface.Name == "lo" || iface.Name == "lo0" {
+			continue
+		}
+		for _, addr := range iface.IPAddresses {
+			if addr.Type == "ipv4" && !strings.HasPrefix(addr.Address, "127.") {
+				return addr.Address, nil
+			}
+		}
+	}
+	
+	return "", fmt.Errorf("no IPv4 address found")
 }
 
 // setupNgrokTunnel sets up an ngrok tunnel for SSH access

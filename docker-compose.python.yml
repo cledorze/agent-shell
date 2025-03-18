@@ -19,10 +19,15 @@ services:
       - OLLAMA_PORT=11434
       - OLLAMA_MODEL=ALIENTELLIGENCE/linuxcmdxpert
       - LIBVIRT_URI=qemu:///system
+      - VM_TEMPLATE_PATH=/var/lib/libvirt/images/templates/opensuse-tumbleweed.qcow2
+      - VM_DATA_DIR=/app/data/vms
     volumes:
       - agent_data:/app/data
-      - /run/libvirt:/run/libvirt:ro
-      - /var/run/libvirt:/var/run/libvirt:ro
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
+      - /etc/libvirt:/etc/libvirt:ro
+      - /etc/group:/etc/group:ro
+    privileged: true
     restart: unless-stopped
 
   knowledge-system:
@@ -50,4 +55,4 @@ services:
 volumes:
   agent_data:
   knowledge_data:
-  vm_data:  # Added this volume definition
+  vm_data:

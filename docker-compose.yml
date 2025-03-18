@@ -34,10 +34,22 @@ services:
     environment:
       - KNOWLEDGE_SYSTEM_URL=http://knowledge-system:8084
       - COMMAND_EXECUTOR_URL=http://command-executor:8085
+      - VM_MANAGER_URL=http://vm-manager:8083
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DRY_RUN=false
+      - DIRECT_EXECUTION=true
+      - DATA_DIR=/app/data
+      - DEBUG_LEVEL=INFO
+      - VERBOSE_LEVEL=2
+      - COLOR_OUTPUT=true
+      - COMMAND_TIMEOUT=60
+      - OLLAMA_HOST=${OLLAMA_HOST:-100.100.100.160}
+      - OLLAMA_PORT=${OLLAMA_PORT:-11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-ALIENTELLIGENCE/linuxcmdxpert}
     depends_on:
       - knowledge-system
       - command-executor
+      - vm-manager
     volumes:
       - agent_data:/app/data
     restart: unless-stopped
@@ -46,9 +58,20 @@ services:
     build: ./vm-manager
     ports:
       - "8083:8083"
+    environment:
+      - VM_MANAGER_PORT=8083
+      - LIBVIRT_URI=qemu:///system
+      - VM_DATA_DIR=/var/lib/linux-agent-system/vms
+      - VM_TEMPLATE_PATH=/var/lib/libvirt/images/opensuse-tumbleweed-template.qcow2
+      - LIBVIRT_NETWORK=default
+      - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
+      - NGROK_REGION=${NGROK_REGION:-us}
+      - ENABLE_SIMULATION=${ENABLE_SIMULATION:-false}
     volumes:
-      - vm_data:/app/data
-      - /var/run/libvirt:/var/run/libvirt  # To access libvirt on the host
+      - vm_data:/var/lib/linux-agent-system/vms
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
+    privileged: true  # Required for libvirt access
     restart: unless-stopped
 
   command-executor:
@@ -56,7 +79,9 @@ services:
     ports:
       - "8085:8085"
     environment:
+      - COMMAND_EXECUTOR_PORT=8085
       - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
+      - VM_MANAGER_URL=http://vm-manager:8083
     volumes:
       - executor_data:/app/data
     restart: unless-stopped
@@ -69,6 +94,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANYTHINGLLM_URL=${ANYTHINGLLM_URL}
       - ANYTHINGLLM_API_KEY=${ANYTHINGLLM_API_KEY}
+      - DATA_DIR=/app/data
     volumes:
       - knowledge_data:/app/data
     restart: unless-stopped
